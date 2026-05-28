@@ -1,0 +1,14 @@
+# 忽略 Python 自动生成的缓存目录
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# 忽略sqlite数据库文件
+*.db
+
+# 忽略本地环境变量配置文件
+.env
+
+# 忽略敏感的凭证文件
+.wechat_token.json
