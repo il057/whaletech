@@ -200,7 +200,7 @@ async def quick_pass(req: QuickPassRequest):
     month_count = cur.fetchone()[0]
     conn.close()
     
-    notice_msg = f"(提示: 该访客本月已来访 {month_count} 次)"
+    notice_msg = f"提示: 该访客本月已来访 {month_count} 次"
     await send_visitor_notification(req.name, req.plate, req.phone, req.company, req.reason, notice_msg)
     
     return {"status": "success"}

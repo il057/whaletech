@@ -10,7 +10,7 @@ import asyncio
 import sqlite3
 import websockets
 from fastapi import WebSocket, WebSocketDisconnect
-from wechat_bot import send_visitor_notification
+from wechat_bot import send_visitor_notification, send_human_required_notification
 from database import DB_FILE
 
 VOLC_APP_ID = os.getenv("VOLC_APP_ID")
@@ -36,6 +36,11 @@ class VoicePipeline:
         self.llm_response_buffer = ""
         self.visit_recorded = False
         self.mute_tts_permanently = False
+        self.turn_count = 0          # 用户发言轮次计数
+        self.human_notified = False  # 是否已发送过人工协助通知
+        self.hello_sent = False      # 是否已发送 SayHello（防重复）
+        self.session_ready = False   # SessionStarted 是否已收到
+        self.initial_greeting = ""   # AI 开场白，由 _build_system_role 计算
 
     def _build_frame(self, msg_type: int, event_id: int, serialization: int, payload: bytes = b"", is_session: bool = False) -> bytes:
         """根据 API 文档构建发往服务端的二进制协议数据帧"""
@@ -80,7 +85,8 @@ class VoicePipeline:
                 "2. 需收集齐四个确切信息：【车牌号】、【来访单位】、【手机号】、【干什么】。如访客未提供完整，必须追问。\n"
                 "3. 【最重要规则】：当且仅当确定这四个信息已全部知晓或确认时，请【无需多言、不要做任何口语回复（不要说“好的放行”、“已通知”之类的话）】，直接闭嘴，必须且只能新起一行输出以下JSON格式以触发系统放行！\n"
                 "===JSON_BEGIN==={\"name\":\"\",\"phone\":\"\",\"plate\":\"\",\"company\":\"\",\"reason\":\"\"}===JSON_END===\n"
-                "4. 只要信息没收集齐，绝对不能输出JSON，必须继续开口发问！一旦收集齐，立刻只输出JSON，直接切断服务。"
+                "4. 只要信息没收集齐，绝对不能输出JSON，必须继续开口发问！一旦收集齐，立刻只输出JSON，直接切断服务。\n"
+                "5. 【人工转接规则】：如果访客明确表示要找人工、叫人、转人工、或者明显对自动登记感到不耐烦，你必须立刻简短回应（如\"好的，我帮您叫人，请稍等一下\"），然后彻底停止一切追问，不得再要求访客提供任何信息，不得解释自己是系统。系统会自动通知人工处理。"
             )
             
             if user and user["phone"]:
@@ -91,13 +97,19 @@ class VoicePipeline:
                 u_co = user["default_company"] or ""
                 
                 greeting = f"{u_name}先生/女士" if u_name else f"尾号{u_phone[-4:]}的车主"
+                self.initial_greeting = f"{greeting}，还是像上次一样去{u_co}{last_reason}吗？"
                 
                 prompt = base_rule + (
                     f"\n\n【当前访客背景】：后台查到这是老访客记录：手机[{u_phone}]、车牌[{u_plate}]、常去单位[{u_co}]，上次事由是[{last_reason}]。\n"
                     f"请务必主动打招呼核对：'{greeting}您好！还是像上次一样去{u_co}{last_reason}吗？'\n"
-                    f"如果访客回答肯定的意思（如“是的”、“对”），这就直接意味着四项信息已全部集齐，你【不准再重新询问】车牌、手机等，且必须【不作任何回复】立刻利用已有信息输出JSON放行！如果访客说不是，再去追问变化的信息。"
+                    f"【肯定回答处理】：如果访客回答肯定（如\"是的\"、\"对\"、\"嗯\"），四项信息全部集齐，必须【不作任何回复】立刻利用已有信息输出JSON放行！\n"
+                    f"【否定回答处理】：如果访客说不是/不对/去别处/其他事由，说明单位或事由有变化。此时：\n"
+                    f"  - 车牌[{u_plate}]和手机[{u_phone}]已明确知晓，绝对不要再开口问！\n"
+                    f"  - 只需简短追问：'哦，那这次去哪里/干嘛的？' 即可。\n"
+                    f"  - 访客确认新的单位和事由后，立刻用已知车牌、手机组合输出JSON，无需任何额外口语回复。"
                 )
             else:
+                self.initial_greeting = "师傅，去哪家公司？来干嘛的？车牌号和手机号也报一下。"
                 prompt = base_rule + (
                     "\n\n【当前访客背景】：这是一位新访客，后台无记录。\n"
                     "请主动开口问好并直接询问车牌、单位、事由和电话（尽量自然地合并提问，一口气讲完）。"
@@ -151,13 +163,10 @@ class VoicePipeline:
                 payload_bytes = json.dumps(start_session_payload).encode('utf-8')
                 await volc_ws.send(self._build_frame(msg_type=1, event_id=100, is_session=True, serialization=1, payload=payload_bytes))
                 
-                # 【3】主动发送打招呼事件，强迫 AI 率先开口执行 Prompt 的第一句话
-                hello_payload = json.dumps({"content": "（系统通知：访客已接通语音，请你直接开口询问访客，核实登记信息，不要寒暄你好）"}).encode('utf-8')
-                await volc_ws.send(self._build_frame(msg_type=1, event_id=300, is_session=True, serialization=1, payload=hello_payload))
-                
-                # 开始互斥收发
+                # 【3】先启动接收任务，再发 hello，避免服务端响应在任务创建前到达而被丢弃
                 recv_volc_task = asyncio.create_task(self._recv_from_volcengine(volc_ws, client_ws))
                 recv_client_task = asyncio.create_task(self._recv_from_client(client_ws, volc_ws))
+                # SayHello (event 300) 将在收到服务端 SessionStarted (event 150) 后由 recv 任务自动发出
                 
                 # 任一方退出则终止
                 done, pending = await asyncio.wait(
@@ -181,6 +190,14 @@ class VoicePipeline:
                 # 构造 Audio-only 请求帧 (msg_type=2), event=200, serialization=0
                 frame = self._build_frame(msg_type=2, event_id=200, serialization=0, payload=audio_data)
                 await volc_ws.send(frame)
+                
+                # 第一帧音频转发后（音频流已建立），若 SessionStarted 也已就绪，立刻发 SayHello
+                if self.session_ready and not self.hello_sent:
+                    self.hello_sent = True
+                    hello_payload = json.dumps({"content": self.initial_greeting}).encode('utf-8')
+                    await volc_ws.send(self._build_frame(msg_type=1, event_id=300, is_session=True, serialization=1, payload=hello_payload))
+                    logging.info(f"✅ 首帧音频已发，SayHello 发送: {self.initial_greeting}")
+                    
             except WebSocketDisconnect:
                 break
             except Exception as e:
@@ -236,8 +253,15 @@ class VoicePipeline:
                             payload_size = struct.unpack(">I", resp[offset:offset+4])[0]
                             payload = resp[offset+4 : offset+4+payload_size]
                             
-                            if event_id == 352:
+                            if event_id == 150:
+                                # SessionStarted — 会话已就绪，标记 session_ready
+                                # SayHello 将在第一帧音频转发后发送，确保音频流已建立
+                                self.session_ready = True
+                                logging.info("✅ SessionStarted 收到，等待首帧音频后发送 SayHello")
+                                    
+                            elif event_id == 352:
                                 # TTSResponse (大模型语音合成流)
+                                logging.debug(f"TTSResponse received, {len(payload)} bytes, muted={self.mute_tts_permanently}")
                                 if not self.mute_tts_permanently:
                                     await client_ws.send_bytes(payload)
                                 
@@ -268,9 +292,24 @@ class VoicePipeline:
                                         user_text = info['results'][0].get('text')
                                         logging.info(f"🎤 访客: {user_text}")
                                         await client_ws.send_json({"type": "user_text", "text": user_text})
+                                        # 累计轮数并检测人工意图
+                                        self.turn_count += 1
+                                        await self._check_human_intent(user_text)
                                         
+                            elif event_id == 599:
+                                # DialogCommonError — 火山对话通用错误
+                                if serialization == 1:
+                                    err_info = json.loads(payload.decode('utf-8'))
+                                    logging.error(f"🔴 火山对话错误 event=599: {err_info}")
+                                    
                             elif msg_type == 15:
-                                logging.error(f"火山引擎返回错误: {payload.decode('utf-8')}")
+                                # 协议级错误帧
+                                try:
+                                    logging.error(f"🔴 火山协议错误 msg_type=15, event={event_id}: {payload.decode('utf-8')}")
+                                except Exception:
+                                    logging.error(f"🔴 火山协议错误 msg_type=15, event={event_id}, raw={payload.hex()[:40]}")
+                            else:
+                                logging.info(f"ℹ️ 火山未处理事件 event_id={event_id}, msg_type={msg_type}, payload_size={len(payload)}")
                                 
             except Exception as e:
                 logging.error(f"解析火山引擎协议帧错误: {e}")
@@ -305,7 +344,7 @@ class VoicePipeline:
                 month_count = cur.fetchone()[0]
                 conn.close()
                 
-                notice_msg = f"(提示: 该访客本月已来访 {month_count} 次)"
+                notice_msg = f"提示: 该访客本月已来访 {month_count} 次"
                 success = await send_visitor_notification(name, plate, phone, company, reason, notice_msg)
                 
                 if success:
@@ -320,6 +359,73 @@ class VoicePipeline:
                 
             except Exception as e:
                 logging.error(f"提取入库或推送时发生异常: {e}\n模型原输出: {json_str}")
+
+    def _extract_partial_info(self) -> dict:
+        """尝试从 LLM 响应缓冲区中提取已收集的访客信息（完整或部分 JSON）"""
+        buffer = self.llm_response_buffer
+        if "===JSON_BEGIN===" in buffer and "===JSON_END===" in buffer:
+            start_idx = buffer.find("===JSON_BEGIN===") + len("===JSON_BEGIN===")
+            end_idx = buffer.find("===JSON_END===")
+            try:
+                return json.loads(buffer[start_idx:end_idx].strip())
+            except Exception:
+                pass
+        return {}
+
+    HUMAN_INTENT_KEYWORDS = [
+        "叫人", "转人工", "找人工", "要人工", "人工服务", "要真人", "找真人",
+        "让人来", "叫保安", "找保安", "算了", "不用了", "不想说了", "帮我叫",
+        "不知道", "不清楚", "我不会", "叫个人来", "有没有人"
+    ]
+    MAX_TURNS_BEFORE_HUMAN = 8  # 超过此轮数仍未登记，触发人工
+
+    async def _check_human_intent(self, user_text: str):
+        """检测用户语音中是否含有人工协助意图，或对话轮数过多，触发后推送人工协助通知"""
+        if self.human_notified or self.visit_recorded:
+            return
+
+        has_keyword = any(kw in user_text for kw in self.HUMAN_INTENT_KEYWORDS)
+        has_too_many_turns = self.turn_count >= self.MAX_TURNS_BEFORE_HUMAN
+
+        if has_keyword or has_too_many_turns:
+            self.human_notified = True
+            partial = self._extract_partial_info()
+            
+            # 对于回访用户，从缓冲区提取的信息可能为空（因为AI直接用系统上下文中的记录）
+            # 此时回退查数据库补充已知信息
+            if not partial.get("phone") or not partial.get("plate"):
+                try:
+                    conn = sqlite3.connect(DB_FILE)
+                    conn.row_factory = sqlite3.Row
+                    cur = conn.cursor()
+                    cur.execute("SELECT * FROM users WHERE uuid = ?", (self.user_uuid,))
+                    user_row = cur.fetchone()
+                    conn.close()
+                    if user_row:
+                        if not partial.get("name") and user_row["name"]:
+                            partial["name"] = user_row["name"]
+                        if not partial.get("phone") and user_row["phone"]:
+                            partial["phone"] = user_row["phone"]
+                        if not partial.get("plate") and user_row["default_plate"]:
+                            partial["plate"] = user_row["default_plate"]
+                        if not partial.get("company") and user_row["default_company"]:
+                            partial["company"] = user_row["default_company"]
+                except Exception as db_err:
+                    logging.error(f"人工通知时读取DB失败: {db_err}")
+            
+            if has_keyword:
+                trigger_reason = f"用户主动请求人工（原话：{user_text}）"
+            else:
+                trigger_reason = f"对话已进行 {self.turn_count} 轮，信息仍未采集完整"
+            logging.info(f"[人工协助] 触发通知，原因: {trigger_reason}")
+            await send_human_required_notification(
+                partial.get("name", ""),
+                partial.get("plate", ""),
+                partial.get("phone", ""),
+                partial.get("company", ""),
+                partial.get("reason", ""),
+                trigger_reason
+            )
 
     def _save_to_db(self, name, phone, plate, company, reason):
         """新用户入库 / 老用户更新，并新增 visit 记录"""

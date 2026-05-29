@@ -5,6 +5,7 @@ import base64
 import random
 import asyncio
 import logging
+from datetime import datetime
 from typing import Optional, Dict, Any
 import httpx
 
@@ -166,16 +167,53 @@ async def send_visitor_notification(name: str, plate: str, phone: str, company: 
         logging.error("找不到推送目标的 user_id。")
         return False
         
-    text_content = (
-        f"🚨 访客提醒\n\n"
-        f"姓名: {name}\n"
-        f"车牌: {plate}\n"
-        f"电话: {phone}\n"
-        f"单位: {company}\n"
-        f"事由: {reason}\n"
-        + (f"\n补充说明: {notice}" if notice else "")
-    )
+    time_str = datetime.now().strftime("%Y/%m/%d %H:%M")
+    lines = ["🚨 访客提醒\n"]
+    if name:
+        lines.append(f"姓名: {name}")
+    lines.append(f"车牌: {plate}")
+    lines.append(f"电话: {phone}")
+    lines.append(f"单位: {company}")
+    lines.append(f"事由: {reason}")
+    lines.append(f"时间: {time_str}")
+    if notice:
+        lines.append(f"\n{notice}")
+    text_content = "\n".join(lines)
     
+    await send_text_message(base_url, token, to_user_id, text_content)
+    return True
+
+async def send_human_required_notification(name: str, plate: str, phone: str, company: str, reason: str, trigger_reason: str = "") -> bool:
+    """
+    当 AI 检测到用户有呼叫人工意图时，推送一条人工协助请求消息。
+    包含已获取的全部访客信息，格式与访客提醒一致但标题和语义不同。
+    """
+    session = load_session()
+    if not session or not session.get("token"):
+        logging.error("微信 Token 未就绪，无法发送人工协助通知。")
+        return False
+
+    base_url = session.get("baseUrl", DEFAULT_BASE_URL)
+    token = session.get("token")
+    to_user_id = session.get("userId")
+
+    if not to_user_id:
+        logging.error("找不到推送目标的 user_id。")
+        return False
+
+    time_str = datetime.now().strftime("%Y/%m/%d %H:%M")
+    lines = ["🔔 人工协助请求\n"]
+    lines.append(f"时间: {time_str}")
+    if name:
+        lines.append(f"姓名: {name}")
+    lines.append(f"车牌: {plate or '未获取'}")
+    lines.append(f"电话: {phone or '未获取'}")
+    lines.append(f"单位: {company or '未获取'}")
+    lines.append(f"事由: {reason or '未获取'}")
+    if trigger_reason:
+        lines.append(f"\n请求原因: {trigger_reason}")
+    text_content = "\n".join(lines)
+
     await send_text_message(base_url, token, to_user_id, text_content)
     return True
 
