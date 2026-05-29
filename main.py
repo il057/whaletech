@@ -6,7 +6,7 @@ load_dotenv()
 import uuid as uuid_lib
 import uvicorn
 import asyncio
-import sqlite3
+import aiosqlite
 import logging
 import json
 import re
@@ -45,6 +45,29 @@ def _append_history(user_id: str, user_msg: str, assistant_msg: str):
     if len(hist) > MAX_HISTORY_TURNS * 2:
         _user_histories[user_id] = hist[-(MAX_HISTORY_TURNS * 2):]
 
+# ---------------------------------------------------------------------------
+# SQL 安全拦截：仅允许 SELECT / WITH(CTE) 语句，拦截任何写操作
+# ---------------------------------------------------------------------------
+_SQL_DANGEROUS = re.compile(
+    r'\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|REPLACE|TRUNCATE|ATTACH|DETACH|PRAGMA|VACUUM)\b',
+    re.IGNORECASE
+)
+
+def _is_safe_select(stmt: str) -> bool:
+    """返回 True 表示语句安全（纯 SELECT/WITH），否则应被拦截。"""
+    # 剥离单行注释与块注释，防止注释绕过
+    clean = re.sub(r'--[^\n]*', '', stmt)
+    clean = re.sub(r'/\*.*?\*/', '', clean, flags=re.DOTALL)
+    clean = clean.strip()
+    # 必须以 SELECT 或 WITH（CTE）开头
+    if not re.match(r'^(SELECT|WITH)\b', clean, re.IGNORECASE):
+        return False
+    # 二次检查：即便以 SELECT 开头，子查询中也不得含危险关键字
+    if _SQL_DANGEROUS.search(clean):
+        return False
+    return True
+
+
 async def register_visitor_from_wechat(name: str, phone: str, plate: str, company: str, reason: str, visit_time: str = None) -> str:
     """
     由保安通过微信手动补录访客信息：
@@ -55,66 +78,66 @@ async def register_visitor_from_wechat(name: str, phone: str, plate: str, compan
     - 返回确认文字
     """
     try:
-        conn = sqlite3.connect(DB_FILE)
-        conn.row_factory = sqlite3.Row
-        cur = conn.cursor()
+        async with aiosqlite.connect(DB_FILE) as conn:
+            conn.row_factory = aiosqlite.Row
 
-        # 1. 按手机号或车牌匹配现有用户
-        user_uuid = None
-        if phone:
-            cur.execute("SELECT uuid FROM users WHERE phone = ?", (phone,))
-            row = cur.fetchone()
-            if row:
-                user_uuid = row["uuid"]
-        if not user_uuid and plate:
-            cur.execute("SELECT uuid FROM users WHERE default_plate = ?", (plate,))
-            row = cur.fetchone()
-            if row:
-                user_uuid = row["uuid"]
+            # 1. 按手机号或车牌匹配现有用户
+            user_uuid = None
+            if phone:
+                async with conn.execute("SELECT uuid FROM users WHERE phone = ?", (phone,)) as cur:
+                    row = await cur.fetchone()
+                    if row:
+                        user_uuid = row["uuid"]
+            if not user_uuid and plate:
+                async with conn.execute("SELECT uuid FROM users WHERE default_plate = ?", (plate,)) as cur:
+                    row = await cur.fetchone()
+                    if row:
+                        user_uuid = row["uuid"]
 
-        # 2. 没有匹配到则创建新用户
-        if not user_uuid:
-            user_uuid = str(uuid_lib.uuid4())
-            cur.execute("INSERT OR IGNORE INTO users (uuid) VALUES (?)", (user_uuid,))
+            # 2. 没有匹配到则创建新用户
+            if not user_uuid:
+                user_uuid = str(uuid_lib.uuid4())
+                await conn.execute("INSERT OR IGNORE INTO users (uuid) VALUES (?)", (user_uuid,))
 
-        # 3. 只更新有值的字段，不覆盖已有信息
-        if phone:
-            cur.execute("UPDATE users SET phone=? WHERE uuid=?", (phone, user_uuid))
-        if name:
-            cur.execute("UPDATE users SET name=? WHERE uuid=?", (name, user_uuid))
-        if plate:
-            cur.execute("UPDATE users SET default_plate=? WHERE uuid=?", (plate, user_uuid))
-        if company:
-            cur.execute("UPDATE users SET default_company=? WHERE uuid=?", (company, user_uuid))
+            # 3. 只更新有值的字段，不覆盖已有信息
+            if phone:
+                await conn.execute("UPDATE users SET phone=? WHERE uuid=?", (phone, user_uuid))
+            if name:
+                await conn.execute("UPDATE users SET name=? WHERE uuid=?", (name, user_uuid))
+            if plate:
+                await conn.execute("UPDATE users SET default_plate=? WHERE uuid=?", (plate, user_uuid))
+            if company:
+                await conn.execute("UPDATE users SET default_company=? WHERE uuid=?", (company, user_uuid))
 
-        # 4. 新增来访记录（时间优先取 LLM 从消息中解析的时间，兜底为当前时间）
-        actual_time = visit_time if visit_time else datetime.now().strftime('%Y/%m/%d %H:%M')
-        visit_reason_str = f"前往{company}办理{reason}" if company and reason else (company or reason or "人工登记")
-        cur.execute("INSERT INTO visits (user_uuid, visit_reason, timestamp) VALUES (?, ?, ?)",
-                    (user_uuid, visit_reason_str, actual_time))
+            # 4. 新增来访记录（时间优先取 LLM 从消息中解析的时间，兜底为当前时间）
+            actual_time = visit_time if visit_time else datetime.now().strftime('%Y/%m/%d %H:%M')
+            visit_reason_str = f"前往{company}办理{reason}" if company and reason else (company or reason or "人工登记")
+            await conn.execute(
+                "INSERT INTO visits (user_uuid, visit_reason, timestamp) VALUES (?, ?, ?)",
+                (user_uuid, visit_reason_str, actual_time)
+            )
 
-        # 5. 将最近一条匹配的 pending 案件标记为 resolved
-        match_params = []
-        match_cond = []
-        if plate:
-            match_cond.append("partial_plate=?")
-            match_params.append(plate)
-        if phone:
-            match_cond.append("partial_phone=?")
-            match_params.append(phone)
-        if match_cond:
-            where = " OR ".join(match_cond)
-            cur.execute(f"""
-                UPDATE pending_human_cases SET status='resolved'
-                WHERE id = (
-                    SELECT id FROM pending_human_cases
-                    WHERE status='pending' AND ({where})
-                    ORDER BY created_at DESC LIMIT 1
-                )
-            """, match_params)
+            # 5. 将最近一条匹配的 pending 案件标记为 resolved
+            match_params = []
+            match_cond = []
+            if plate:
+                match_cond.append("partial_plate=?")
+                match_params.append(plate)
+            if phone:
+                match_cond.append("partial_phone=?")
+                match_params.append(phone)
+            if match_cond:
+                where = " OR ".join(match_cond)
+                await conn.execute(f"""
+                    UPDATE pending_human_cases SET status='resolved'
+                    WHERE id = (
+                        SELECT id FROM pending_human_cases
+                        WHERE status='pending' AND ({where})
+                        ORDER BY created_at DESC LIMIT 1
+                    )
+                """, match_params)
 
-        conn.commit()
-        conn.close()
+            await conn.commit()
 
         # 6. 构造确认消息
         parts = []
@@ -214,18 +237,24 @@ async def handle_wechat_message(base_url, token, to_user_id, message, context_to
             raw_sql = sql_match.group(1).strip()
             # 按分号拆分，过滤空语句
             statements = [s.strip() for s in raw_sql.split(';') if s.strip()]
-            conn = sqlite3.connect(DB_FILE)
-            cur = conn.cursor()
             all_results = []
-            for stmt in statements:
-                try:
-                    cur.execute(stmt)
-                    rows = cur.fetchall()
-                    all_results.append({"sql": stmt, "rows": rows})
-                except Exception as sql_err:
-                    all_results.append({"sql": stmt, "error": str(sql_err)})
-                    logging.warning(f"SQL 子语句执行失败: {stmt} — {sql_err}")
-            conn.close()
+            async with aiosqlite.connect(DB_FILE) as conn:
+                for stmt in statements:
+                    # ---- SQL 安全拦截：仅允许只读 SELECT 语句 ----
+                    if not _is_safe_select(stmt):
+                        logging.warning(f"[SQL 安全拦截] 非 SELECT 语句已被阻止: {stmt[:120]}")
+                        all_results.append({
+                            "sql": stmt,
+                            "error": "⚠️ 该语句已被安全策略拦截，仅允许执行 SELECT 查询。"
+                        })
+                        continue
+                    try:
+                        async with conn.execute(stmt) as cur:
+                            rows = await cur.fetchall()
+                            all_results.append({"sql": stmt, "rows": [list(r) for r in rows]})
+                    except Exception as sql_err:
+                        all_results.append({"sql": stmt, "error": str(sql_err)})
+                        logging.warning(f"SQL 子语句执行失败: {stmt} — {sql_err}")
 
             resp2 = await openai_client.chat.completions.create(
                 model="deepseek-v4-flash-260425",
@@ -304,7 +333,7 @@ async def wechat_long_polling_loop():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # 确保数据库与最新表结构同步（幂等操作）
-    init_db()
+    await init_db()
     # 系统启动时，孵化常驻的微信协议轮询协程
     wechat_task = asyncio.create_task(wechat_long_polling_loop())
     yield
@@ -329,21 +358,21 @@ async def get_visitor_info(user_uuid: str):
     """
     提供给前端，查询是否是老访客，以决定是否展示一键登记按钮
     """
-    conn = sqlite3.connect(DB_FILE)
-    conn.row_factory = sqlite3.Row
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM users WHERE uuid = ?", (user_uuid,))
-    user = cur.fetchone()
-    
-    if not user or not user["phone"]:
-        conn.close()
-        return {"is_old": False}
-        
-    cur.execute("SELECT visit_reason FROM visits WHERE user_uuid = ? ORDER BY timestamp DESC LIMIT 1", (user_uuid,))
-    last_visit = cur.fetchone()
+    async with aiosqlite.connect(DB_FILE) as conn:
+        conn.row_factory = aiosqlite.Row
+        async with conn.execute("SELECT * FROM users WHERE uuid = ?", (user_uuid,)) as cur:
+            user = await cur.fetchone()
+
+        if not user or not user["phone"]:
+            return {"is_old": False}
+
+        async with conn.execute(
+            "SELECT visit_reason FROM visits WHERE user_uuid = ? ORDER BY timestamp DESC LIMIT 1",
+            (user_uuid,)
+        ) as cur:
+            last_visit = await cur.fetchone()
+
     reason = last_visit["visit_reason"] if last_visit else "办事"
-    conn.close()
-    
     return {
         "is_old": True,
         "name": user["name"] or "",
@@ -358,19 +387,24 @@ async def quick_pass(req: QuickPassRequest):
     """
     处理一键放行的请求，绕过语音AI直接入库并通知门卫
     """
-    conn = sqlite3.connect(DB_FILE)
-    cur = conn.cursor()
-    cur.execute("INSERT INTO visits (user_uuid, visit_reason) VALUES (?, ?)", (req.user_uuid, req.reason))
-    conn.commit()
-    
-    # 统计本月来访次数
-    cur.execute("SELECT COUNT(*) FROM visits WHERE user_uuid = ? AND strftime('%Y-%m', timestamp) = strftime('%Y-%m', 'now')", (req.user_uuid,))
-    month_count = cur.fetchone()[0]
-    conn.close()
-    
+    async with aiosqlite.connect(DB_FILE) as conn:
+        await conn.execute(
+            "INSERT INTO visits (user_uuid, visit_reason) VALUES (?, ?)",
+            (req.user_uuid, req.reason)
+        )
+        await conn.commit()
+
+        # 统计本月来访次数
+        async with conn.execute(
+            "SELECT COUNT(*) FROM visits WHERE user_uuid = ? AND strftime('%Y-%m', timestamp) = strftime('%Y-%m', 'now')",
+            (req.user_uuid,)
+        ) as cur:
+            row = await cur.fetchone()
+            month_count = row[0]
+
     notice_msg = f"提示: 该访客本月已来访 {month_count} 次"
     await send_visitor_notification(req.name, req.plate, req.phone, req.company, req.reason, notice_msg)
-    
+
     return {"status": "success"}
 
 @app.get("/", response_class=HTMLResponse)
