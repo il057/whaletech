@@ -27,6 +27,7 @@ from wechat_bot import (
     get_updates,
     send_text_message,
     send_typing_indicator,
+    update_user_context_token,
     DEFAULT_BASE_URL
 )
 
@@ -170,6 +171,19 @@ async def register_visitor_from_wechat(name: str, phone: str, plate: str, compan
         return "❌ 登记失败，请检查信息格式后重试。"
 
 
+
+# 保活短语集合：保安发送这些词时仅刷新 context_token，不触发 LLM
+# 目的：维持 iLink 会话窗口活跃，避免超过约 10 条主动推送的投递上限
+_KEEPALIVE_PHRASES = {
+    # 确认/收悉
+    "收到", "知道了", "了解", "明白", "好的", "好", "ok", "OK", "Ok",
+    "嗯", "嗯嗯", "哦", "哦哦", "是", "是的", "对", "行",
+    # 感谢/礼貌
+    "谢谢", "谢", "辛苦了", "辛苦", "好的谢谢",
+    # 数字/符号确认
+    "1", "。", ".",
+}
+
 async def handle_wechat_message(base_url, token, to_user_id, message, context_token, openai_client):
     """
     处理保安通过微信发来的消息，支持三种意图：
@@ -178,6 +192,11 @@ async def handle_wechat_message(base_url, token, to_user_id, message, context_to
     C. 其他一般对话
     携带最近 MAX_HISTORY_TURNS 轮上下文，让 AI 理解追问。
     """
+    # 保活短语：仅刷新 context_token，不消耗 LLM token
+    if message.strip() in _KEEPALIVE_PHRASES:
+        logging.info(f"[保活] 收到确认短语 '{message.strip()}'，已刷新会话窗口，跳过 LLM")
+        return
+
     db_schema = (
         "数据库表结构（SQL中字段名必须与此完全一致，不得自行更改）:\n"
         "TABLE users (uuid TEXT, name TEXT, phone TEXT, default_plate TEXT, default_company TEXT)\n"
@@ -325,12 +344,27 @@ async def wechat_long_polling_loop():
             
             # 遍历所有新收到的消息
             for msg in updates.get("msgs", []):
-                # 必须跳过机器人自己发出的消息（message_type == 2 代表 bot，1 代表 user）
-                if msg.get("message_type") != 1:
-                    continue
-                
+                msg_type = msg.get("message_type")
                 context_token = msg.get("context_token")
+
+                if msg_type == 2:
+                    # bot 自身消息的 echo（服务端回显）：to_user_id 才是真正的对话用户
+                    # 捕获 echo 中的 context_token 以便滚动刷新（若服务端下发了新 token）
+                    echo_user = msg.get("to_user_id")
+                    if echo_user and context_token:
+                        update_user_context_token(echo_user, context_token)
+                    continue  # echo 消息不触发业务处理
+
+                if msg_type != 1:
+                    continue  # 其他未知消息类型，跳过
+
                 from_user_id = msg.get("from_user_id")
+
+                # 缓存该用户最新的 context_token，供主动推送时复用
+                # iLink 协议要求发送消息时必须携带合法的 context_token，
+                # 否则超过约 10 条主动推送后服务端将停止投递
+                if from_user_id and context_token:
+                    update_user_context_token(from_user_id, context_token)
                 
                 for item in msg.get("item_list", []):
                     # 类型是普通文本信息

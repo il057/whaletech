@@ -16,6 +16,40 @@ BOT_TYPE = "3"
 CHANNEL_VERSION = "1.0.2"
 TOKEN_FILE = ".wechat_token.json"
 
+# 每个用户最后一次收到消息时携带的 context_token 缓存
+# iLink 协议要求回复（含主动推送）时必须携带合法的 context_token，否则超过约 10 条后
+# 服务端虽返回 200 但实际不投递到微信客户端
+_user_context_tokens: dict = {}
+
+def _persist_context_tokens():
+    """将当前所有 context_tokens 合并写入 session 文件（原子更新）。"""
+    try:
+        session: dict = {}
+        if os.path.exists(TOKEN_FILE):
+            with open(TOKEN_FILE, "r", encoding="utf-8") as _f:
+                session = json.load(_f)
+        session["context_tokens"] = dict(_user_context_tokens)  # 浅拷贝
+        with open(TOKEN_FILE, "w", encoding="utf-8") as _f:
+            json.dump(session, _f, ensure_ascii=False, indent=2)
+    except Exception as _e:
+        logging.warning(f"持久化 context_tokens 失败（非致命）: {_e}")
+
+def update_user_context_token(user_id: str, context_token: str):
+    """收到用户消息（或 sendmessage 响应）时调用，更新并持久化该用户的 context_token。"""
+    if not (user_id and context_token):
+        return
+    if _user_context_tokens.get(user_id) == context_token:
+        return  # 无变化，跳过写盘
+    _user_context_tokens[user_id] = context_token
+    _persist_context_tokens()
+
+def get_user_context_token(user_id: str) -> Optional[str]:
+    """获取指定用户缓存的最新 context_token，用于主动推送消息。"""
+    token = _user_context_tokens.get(user_id)
+    if not token:
+        logging.warning(f"[context_token] 用户 {user_id} 无缓存 token，主动推送可能受10条限制。请确保保安先向机器人发过一条消息。")
+    return token
+
 def random_wechat_uin() -> str:
     """
     UIN 随机头生成：生成 4 字节的随机 uint32（大端解码相当于直接取随机数的整数值），
@@ -42,7 +76,13 @@ def load_session() -> Optional[Dict[str, Any]]:
         return None
     try:
         with open(TOKEN_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+            data = json.load(f)
+        # 恢复持久化的 context_tokens（避免重启后丢失，导致主动推送失效）
+        stored = data.get("context_tokens", {})
+        if isinstance(stored, dict) and stored:
+            _user_context_tokens.update(stored)
+            logging.info(f"[context_token] 从磁盘恢复了 {len(stored)} 个用户的 context_token")
+        return data
     except Exception as e:
         logging.error(f"加载 Token 文件失败: {e}")
         return None
@@ -166,6 +206,9 @@ async def send_visitor_notification(name: str, plate: str, phone: str, company: 
     if not to_user_id:
         logging.error("找不到推送目标的 user_id。")
         return False
+
+    # 复用该用户最近一次会话的 context_token，确保消息能被正常投递
+    context_token = get_user_context_token(to_user_id)
         
     time_str = datetime.now().strftime("%Y/%m/%d %H:%M")
     lines = ["🚨 访客提醒\n"]
@@ -180,7 +223,7 @@ async def send_visitor_notification(name: str, plate: str, phone: str, company: 
         lines.append(f"\n{notice}")
     text_content = "\n".join(lines)
     
-    await send_text_message(base_url, token, to_user_id, text_content)
+    await send_text_message(base_url, token, to_user_id, text_content, context_token)
     return True
 
 async def send_human_required_notification(name: str, plate: str, phone: str, company: str, reason: str, trigger_reason: str = "") -> bool:
@@ -201,6 +244,9 @@ async def send_human_required_notification(name: str, plate: str, phone: str, co
         logging.error("找不到推送目标的 user_id。")
         return False
 
+    # 复用该用户最近一次会话的 context_token，确保消息能被正常投递
+    context_token = get_user_context_token(to_user_id)
+
     time_str = datetime.now().strftime("%Y/%m/%d %H:%M")
     lines = ["🔔 人工协助请求\n"]
     lines.append(f"时间: {time_str}")
@@ -214,7 +260,7 @@ async def send_human_required_notification(name: str, plate: str, phone: str, co
         lines.append(f"\n请求原因: {trigger_reason}")
     text_content = "\n".join(lines)
 
-    await send_text_message(base_url, token, to_user_id, text_content)
+    await send_text_message(base_url, token, to_user_id, text_content, context_token)
     return True
 
 async def send_text_message(base_url: str, token: str, to_user_id: str, text: str, context_token: str = None):
@@ -260,6 +306,16 @@ async def send_text_message(base_url: str, token: str, to_user_id: str, text: st
                         os.remove(TOKEN_FILE)
             else:
                 logging.info(f"消息推送成功 -> {text[:15]}...")
+                # 尝试从响应中捕获服务端返回的新 context_token（滚动刷新）
+                # iLink 服务端有时会在 sendmessage 响应里下发新 token
+                try:
+                    resp_json = resp.json()
+                    new_token = resp_json.get("context_token")
+                    if new_token and to_user_id:
+                        update_user_context_token(to_user_id, new_token)
+                        logging.debug("[context_token] 从 sendmessage 响应获取到新 token，已刷新缓存")
+                except Exception:
+                    pass  # JSON 解析失败无妨，不影响主流程
         except Exception as e:
             logging.error(f"调用发送消息接口异常: {e}")
 
