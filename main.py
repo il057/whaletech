@@ -3,10 +3,12 @@ from dotenv import load_dotenv
 # 在任何其他模块导入和环境变量读取前，最先加载 .env
 load_dotenv()
 
+import uuid as uuid_lib
 import uvicorn
 import asyncio
 import sqlite3
 import logging
+import json
 import re
 from datetime import datetime
 from contextlib import asynccontextmanager
@@ -16,72 +18,236 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from openai import AsyncOpenAI
 
-from database import DB_FILE
+from database import DB_FILE, init_db
 from voice_pipeline import VoicePipeline
 from wechat_bot import (
-    send_visitor_notification, 
-    ensure_session, 
-    get_updates, 
-    send_text_message, 
+    send_visitor_notification,
+    ensure_session,
+    get_updates,
+    send_text_message,
+    send_typing_indicator,
     DEFAULT_BASE_URL
 )
 
-async def handle_llm_query(base_url, token, to_user_id, question, context_token, openai_client):
+# 每个用户的对话历史，key = from_user_id，value = [{role, content}, ...]
+# 保留最近 MAX_HISTORY_TURNS 轮（每轮 = user + assistant 各一条）
+_user_histories: dict = {}
+MAX_HISTORY_TURNS = 5
+
+def _get_history(user_id: str) -> list:
+    return _user_histories.get(user_id, [])
+
+def _append_history(user_id: str, user_msg: str, assistant_msg: str):
+    hist = _user_histories.setdefault(user_id, [])
+    hist.append({"role": "user",      "content": user_msg})
+    hist.append({"role": "assistant", "content": assistant_msg})
+    # 超出上限时裁剪最早的
+    if len(hist) > MAX_HISTORY_TURNS * 2:
+        _user_histories[user_id] = hist[-(MAX_HISTORY_TURNS * 2):]
+
+async def register_visitor_from_wechat(name: str, phone: str, plate: str, company: str, reason: str, visit_time: str = None) -> str:
     """
-    处理保安在微信上发出的自然语言查询（驱动 Text-to-SQL）
+    由保安通过微信手动补录访客信息：
+    - 按手机号或车牌匹配已有用户，否则创建新用户
+    - 更新用户档案中的空白字段
+    - 将最近一条匹配的 pending_human_cases 标记为 resolved
+    - 新增 visits 记录（时间取门卫提供的时间，否则取消息处理时刻）
+    - 返回确认文字
+    """
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+
+        # 1. 按手机号或车牌匹配现有用户
+        user_uuid = None
+        if phone:
+            cur.execute("SELECT uuid FROM users WHERE phone = ?", (phone,))
+            row = cur.fetchone()
+            if row:
+                user_uuid = row["uuid"]
+        if not user_uuid and plate:
+            cur.execute("SELECT uuid FROM users WHERE default_plate = ?", (plate,))
+            row = cur.fetchone()
+            if row:
+                user_uuid = row["uuid"]
+
+        # 2. 没有匹配到则创建新用户
+        if not user_uuid:
+            user_uuid = str(uuid_lib.uuid4())
+            cur.execute("INSERT OR IGNORE INTO users (uuid) VALUES (?)", (user_uuid,))
+
+        # 3. 只更新有值的字段，不覆盖已有信息
+        if phone:
+            cur.execute("UPDATE users SET phone=? WHERE uuid=?", (phone, user_uuid))
+        if name:
+            cur.execute("UPDATE users SET name=? WHERE uuid=?", (name, user_uuid))
+        if plate:
+            cur.execute("UPDATE users SET default_plate=? WHERE uuid=?", (plate, user_uuid))
+        if company:
+            cur.execute("UPDATE users SET default_company=? WHERE uuid=?", (company, user_uuid))
+
+        # 4. 新增来访记录（时间优先取 LLM 从消息中解析的时间，兜底为当前时间）
+        actual_time = visit_time if visit_time else datetime.now().strftime('%Y/%m/%d %H:%M')
+        visit_reason_str = f"前往{company}办理{reason}" if company and reason else (company or reason or "人工登记")
+        cur.execute("INSERT INTO visits (user_uuid, visit_reason, timestamp) VALUES (?, ?, ?)",
+                    (user_uuid, visit_reason_str, actual_time))
+
+        # 5. 将最近一条匹配的 pending 案件标记为 resolved
+        match_params = []
+        match_cond = []
+        if plate:
+            match_cond.append("partial_plate=?")
+            match_params.append(plate)
+        if phone:
+            match_cond.append("partial_phone=?")
+            match_params.append(phone)
+        if match_cond:
+            where = " OR ".join(match_cond)
+            cur.execute(f"""
+                UPDATE pending_human_cases SET status='resolved'
+                WHERE id = (
+                    SELECT id FROM pending_human_cases
+                    WHERE status='pending' AND ({where})
+                    ORDER BY created_at DESC LIMIT 1
+                )
+            """, match_params)
+
+        conn.commit()
+        conn.close()
+
+        # 6. 构造确认消息
+        parts = []
+        if name:    parts.append(f"姓名: {name}")
+        if plate:   parts.append(f"车牌: {plate}")
+        if phone:   parts.append(f"电话: {phone}")
+        if company: parts.append(f"单位: {company}")
+        if reason:  parts.append(f"事由: {reason}")
+        parts.append(f"时间: {actual_time}")
+        logging.info(f"[微信补录] 访客 {name or plate or phone} 信息已入库，时间: {actual_time}")
+        return "✅ 访客信息已登记\n" + "\n".join(parts)
+
+    except Exception as e:
+        logging.error(f"微信补录入库失败: {e}")
+        return "❌ 登记失败，请检查信息格式后重试。"
+
+
+async def handle_wechat_message(base_url, token, to_user_id, message, context_token, openai_client):
+    """
+    处理保安通过微信发来的消息，支持三种意图：
+    A. 补充登记访客信息（手动补录）
+    B. 查询数据库（Text-to-SQL，支持多条语句）
+    C. 其他一般对话
+    携带最近 MAX_HISTORY_TURNS 轮上下文，让 AI 理解追问。
     """
     db_schema = (
-        "数据库表结构: \n"
+        "数据库表结构（SQL中字段名必须与此完全一致，不得自行更改）:\n"
         "TABLE users (uuid TEXT, name TEXT, phone TEXT, default_plate TEXT, default_company TEXT)\n"
         "TABLE visits (id INTEGER, user_uuid TEXT, visit_reason TEXT, timestamp DATETIME)\n"
+        "  -- visits 表的时间列名是 timestamp，不是 visit_time、time 或其他名称\n"
+        "  -- 按日期查询示例: WHERE DATE(timestamp) = '2026-05-29'\n"
+        "  -- 按小时分布示例: strftime('%H', timestamp)\n"
+        "TABLE pending_human_cases (id INTEGER, user_uuid TEXT, partial_name TEXT, partial_phone TEXT, "
+        "partial_plate TEXT, partial_company TEXT, partial_reason TEXT, trigger_reason TEXT, status TEXT, created_at DATETIME)\n"
     )
-    
+
     system_prompt = f"""你是一个智能门卫数据助手。
 {db_schema}
 当前时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-请你根据保安的问题，如果需要查询数据库，直接写出能在 SQLite 运行的合法 SQL 查询语句，包在 <sql> 和 </sql> 之间，不要返回其他分析内容，执行后我将给你结果，你再汇报给保安；如果不需要查库，直接给出回答，不可包含<sql>。"""
+
+判断保安发来的消息类型并作出对应处理：
+
+【类型A：补充登记访客信息】
+如果保安是在补录某位访客的信息（例如"刚刚那个车牌是xxx手机xxx去xx公司送货"、"帮我录一下沪A12345，手机138xxxx，去华为送货"、"补一条：张三，沪B99999，去阿里拜访"），
+请仅输出以下格式，不要输出任何其他内容：
+===REGISTER_BEGIN===
+{{"name":"","phone":"","plate":"","company":"","reason":"","visit_time":""}}
+===REGISTER_END===
+字段说明：name(姓名，可为空), phone(手机号，可为空), plate(车牌号), company(来访单位), reason(事由动作如送货/拜访/施工), visit_time(来访时间，若门卫明确提到时间则填写格式 YYYY-MM-DD HH:MM:SS，否则留空字符串)
+
+【类型B：查询或分析数据库】
+如果保安是在查询统计或分析记录（例如"今天来了几辆车"、"全面分析来访数据"、"找一下沪A12345的记录"、"有哪些待处理案件"），
+请写出能在SQLite执行的合法SQL查询语句，包在<sql>和</sql>之间。
+可以包含多条SELECT语句，用分号分隔，系统会逐条执行并汇总结果。
+重要：visits表的时间列名是 timestamp（不是 visit_time），查询时必须用 timestamp，例如 DATE(timestamp) = '2026-05-29'。
+
+【类型C：其他对话】
+直接用自然语言回答，不包含以上任何格式标记。"""
+
+    # 先异步发送"正在输入"状态
+    asyncio.create_task(send_typing_indicator(base_url, token, to_user_id, context_token))
+
+    # 拼装带历史上下文的消息列表
+    history = _get_history(to_user_id)
+    messages = [{"role": "system", "content": system_prompt}]
+    messages.extend(history)
+    messages.append({"role": "user", "content": message})
 
     try:
-        # 第一轮：询问模型是否需要 SQL
         resp1 = await openai_client.chat.completions.create(
             model="deepseek-v4-flash-260425",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": question}
-            ]
+            messages=messages
         )
         reply1 = resp1.choices[0].message.content
-        
-        # 判断并提取 SQL
+
+        # 类型A：访客登记
+        if "===REGISTER_BEGIN===" in reply1 and "===REGISTER_END===" in reply1:
+            start = reply1.find("===REGISTER_BEGIN===") + len("===REGISTER_BEGIN===")
+            end = reply1.find("===REGISTER_END===")
+            json_str = reply1[start:end].strip()
+            data = json.loads(json_str)
+            confirm_msg = await register_visitor_from_wechat(
+                data.get("name", ""),
+                data.get("phone", ""),
+                data.get("plate", ""),
+                data.get("company", ""),
+                data.get("reason", ""),
+                data.get("visit_time", "") or None
+            )
+            await send_text_message(base_url, token, to_user_id, confirm_msg, context_token)
+            _append_history(to_user_id, message, confirm_msg)
+            return
+
+        # 类型B：SQL 查询——支持多条语句，逐条执行并汇总结果
         sql_match = re.search(r'<sql>(.*?)</sql>', reply1, re.IGNORECASE | re.DOTALL)
         if sql_match:
-            sql = sql_match.group(1).strip()
-            # 执行查询
+            raw_sql = sql_match.group(1).strip()
+            # 按分号拆分，过滤空语句
+            statements = [s.strip() for s in raw_sql.split(';') if s.strip()]
             conn = sqlite3.connect(DB_FILE)
             cur = conn.cursor()
-            cur.execute(sql)
-            rows = cur.fetchall()
+            all_results = []
+            for stmt in statements:
+                try:
+                    cur.execute(stmt)
+                    rows = cur.fetchall()
+                    all_results.append({"sql": stmt, "rows": rows})
+                except Exception as sql_err:
+                    all_results.append({"sql": stmt, "error": str(sql_err)})
+                    logging.warning(f"SQL 子语句执行失败: {stmt} — {sql_err}")
             conn.close()
-            
-            # 第二轮：将 SQL 执行结果传给大模型，让它输出最终自然语言汇报
+
             resp2 = await openai_client.chat.completions.create(
                 model="deepseek-v4-flash-260425",
                 messages=[
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": question},
+                    *history,
+                    {"role": "user", "content": message},
                     {"role": "assistant", "content": reply1},
-                    {"role": "user", "content": f"SQL 执行结果：{rows}，请用自然语言向保安简短、精准地汇报统计结果，不许出现任何SQL语句。"}
+                    {"role": "user", "content": f"各条SQL执行结果如下：{all_results}\n请用自然语言向保安简短精准地汇报分析结论，不许出现任何SQL语句。"}
                 ]
             )
             final_reply = resp2.choices[0].message.content
         else:
+            # 类型C：直接回答
             final_reply = reply1
-            
+
         await send_text_message(base_url, token, to_user_id, final_reply, context_token)
+        _append_history(to_user_id, message, final_reply)
+
     except Exception as e:
-        logging.error(f"处理保安自然语言查询时出错: {e}")
-        error_msg = "抱歉，刚刚查询数据库时遇到系统异常，请稍后重试。"
-        await send_text_message(base_url, token, to_user_id, error_msg, context_token)
+        logging.error(f"处理保安微信消息时出错: {e}")
+        await send_text_message(base_url, token, to_user_id, "抱歉，处理消息时遇到系统异常，请稍后重试。", context_token)
 
 async def wechat_long_polling_loop():
     """
@@ -127,8 +293,8 @@ async def wechat_long_polling_loop():
                     if item.get("type") == 1 and item.get("text_item"): 
                         question = item["text_item"].get("text", "").strip()
                         if question and from_user_id and client:
-                            logging.info(f"[门卫自然询问] 收到消息: {question}")
-                            await handle_llm_query(base_url, token, from_user_id, question, context_token, client)
+                            logging.info(f"[门卫消息] 收到: {question}")
+                            await handle_wechat_message(base_url, token, from_user_id, question, context_token, client)
             
             await asyncio.sleep(0.5)
         except Exception as e:
@@ -137,6 +303,8 @@ async def wechat_long_polling_loop():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # 确保数据库与最新表结构同步（幂等操作）
+    init_db()
     # 系统启动时，孵化常驻的微信协议轮询协程
     wechat_task = asyncio.create_task(wechat_long_polling_loop())
     yield

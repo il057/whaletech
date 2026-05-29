@@ -41,6 +41,24 @@ def init_db():
             )
         ''')
 
+        # 3. 创建人工待处理记录表 (pending_human_cases)
+        # 记录 AI 无法自动完成登记、需要人工介入的来访会话
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS pending_human_cases (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_uuid TEXT,              -- 关联的访客UUID（可为空）
+                partial_name TEXT,           -- 已采集的姓名（可能不完整）
+                partial_phone TEXT,          -- 已采集的手机号
+                partial_plate TEXT,          -- 已采集的车牌号
+                partial_company TEXT,        -- 已采集的来访单位
+                partial_reason TEXT,         -- 已采集的事由
+                trigger_reason TEXT,         -- 触发人工的原因
+                status TEXT DEFAULT 'pending', -- 状态：pending / resolved
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_uuid) REFERENCES users (uuid)
+            )
+        ''')
+
         conn.commit()
         logging.info(f"数据库初始化成功: {DB_FILE}")
         

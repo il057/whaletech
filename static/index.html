@@ -1,344 +1,1166 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-CN">
+
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>访客语音登记</title>
-    <style>
-        body { 
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; 
-            display: flex; flex-direction: column; align-items: center; justify-content: center; 
-            height: 100vh; margin: 0; background: #f5f5f7; 
-        }
-        .header { margin-bottom: 30px; text-align: center; }
-        .header h1 { margin: 0 0 10px; color: #333; font-size: 28px; }
-        .header p { margin: 0; color: #777; }
-        
-        .main-container {
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            width: 100%;
-            max-width: 400px;
-        }
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+        <title>AI 门卫室 · WhaleTech</title>
+        <style>
+                *,
+                *::before,
+                *::after {
+                        box-sizing: border-box;
+                        -webkit-tap-highlight-color: transparent;
+                }
 
-        .btn-call { 
-            width: 180px; height: 180px; border-radius: 50%; 
-            background: linear-gradient(135deg, #007bff, #0056b3); 
-            color: white; font-size: 28px; font-weight: bold; border: none; cursor: pointer; 
-            display: flex; align-items: center; justify-content: center; 
-            box-shadow: 0 15px 35px rgba(0,123,255,0.4); transition: all 0.3s ease; 
-        }
-        .btn-call:active { transform: scale(0.95); }
-        .btn-call.calling { 
-            background: linear-gradient(135deg, #dc3545, #b02a37); 
-            box-shadow: 0 15px 35px rgba(220,53,69,0.4); 
-            animation: pulse-red 2s infinite; 
-        }
-        
-        @keyframes pulse-red { 
-            0% { box-shadow: 0 0 0 0 rgba(220,53,69,0.7); } 
-            70% { box-shadow: 0 0 0 30px rgba(220,53,69,0); } 
-            100% { box-shadow: 0 0 0 0 rgba(220,53,69,0); } 
-        }
+                :root {
+                        --bg: #050b16;
+                        --bg2: #081020;
+                        --card: rgba(255, 255, 255, 0.035);
+                        --card-hover: rgba(255, 255, 255, 0.06);
+                        --border: rgba(255, 255, 255, 0.07);
+                        --border-hi: rgba(47, 128, 255, 0.3);
+                        --blue: #2f80ff;
+                        --blue-dark: #1a5fdd;
+                        --blue-glow: rgba(47, 128, 255, 0.22);
+                        --cyan: #00d4ff;
+                        --green: #00e676;
+                        --green-dark: #00c853;
+                        --red: #ff4444;
+                        --text: #e8eeff;
+                        --text-sub: rgba(232, 238, 255, 0.42);
+                        --text-dim: rgba(232, 238, 255, 0.2);
+                        --radius-lg: 20px;
+                        --radius-md: 14px;
+                }
 
-        .btn-quick { 
-            width: 100%; padding: 16px; border-radius: 12px; 
-            background: #28a745; color: white; font-size: 18px; font-weight: bold; border: none; cursor: pointer; 
-            box-shadow: 0 5px 15px rgba(40,167,69,0.4); margin-bottom: 10px; transition: all 0.3s ease; 
-            display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
-        }
-        .btn-quick span.sub { font-size: 14px; font-weight: normal; opacity: 0.9; }
-        .btn-quick:active { transform: scale(0.98); }
-        .btn-quick:disabled { background: #6c757d; cursor: not-allowed; box-shadow: none; transform: scale(1); }
+                body {
+                        font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", Arial, sans-serif;
+                        margin: 0;
+                        padding: 0;
+                        background: var(--bg);
+                        min-height: 100vh;
+                        color: var(--text);
+                        overflow-x: hidden;
+                        -webkit-font-smoothing: antialiased;
+                }
 
-        #status { 
-            margin-top: 30px; font-size: 18px; color: #555; 
-            background: white; padding: 10px 20px; border-radius: 20px; 
-            box-shadow: 0 2px 10px rgba(0,0,0,0.05);
-            text-align: center;
-        }
+                body::before {
+                        content: '';
+                        position: fixed;
+                        inset: 0;
+                        z-index: 0;
+                        pointer-events: none;
+                        background-image:
+                                linear-gradient(rgba(47, 128, 255, 0.025) 1px, transparent 1px),
+                                linear-gradient(90deg, rgba(47, 128, 255, 0.025) 1px, transparent 1px);
+                        background-size: 48px 48px;
+                        mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, black 30%, transparent 100%);
+                }
 
-        /* 聊天字幕区域 */
-        #chat-box {
-            width: 90%;
-            height: 180px;
-            margin-top: 20px;
-            overflow-y: auto;
-            background: white;
-            border-radius: 12px;
-            padding: 15px;
-            box-sizing: border-box;
-            box-shadow: inset 0 2px 10px rgba(0,0,0,0.02);
-            display: none;
-            font-size: 15px;
-        }
-        .chat-msg { margin-bottom: 12px; line-height: 1.5; }
-        .chat-ai { color: #007bff; }
-        .chat-ai strong { color: #0056b3; }
-        .chat-user { color: #28a745; text-align: right; }
-        .chat-user strong { color: #1e7e34; }
-    </style>
+                body::after {
+                        content: '';
+                        position: fixed;
+                        top: -200px;
+                        left: 50%;
+                        transform: translateX(-50%);
+                        width: 700px;
+                        height: 500px;
+                        z-index: 0;
+                        pointer-events: none;
+                        background: radial-gradient(ellipse, rgba(47, 128, 255, 0.07) 0%, transparent 70%);
+                }
+
+                #idlePage {
+                        position: relative;
+                        z-index: 1;
+                        display: flex;
+                        flex-direction: column;
+                        align-items: center;
+                        justify-content: space-between;
+                        min-height: 100vh;
+                        padding: 0 0 max(48px, env(safe-area-inset-bottom, 48px));
+                        opacity: 1;
+                        transition: opacity 0.32s ease, transform 0.32s ease;
+                }
+
+                #idlePage.fading-out {
+                        opacity: 0;
+                        transform: scale(0.96) translateY(-8px);
+                }
+
+                .top-bar {
+                        width: 100%;
+                        display: flex;
+                        align-items: center;
+                        justify-content: space-between;
+                        padding: 52px 24px 0;
+                }
+
+                .logo {
+                        display: flex;
+                        align-items: center;
+                        gap: 10px;
+                }
+
+                .logo-mark {
+                        width: 32px;
+                        height: 32px;
+                        background: linear-gradient(135deg, #2f80ff, #00d4ff);
+                        border-radius: 9px;
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                        box-shadow: 0 2px 12px rgba(47, 128, 255, 0.35);
+                }
+
+                .logo-mark svg {
+                        width: 18px;
+                        height: 18px;
+                }
+
+                .logo-name {
+                        font-size: 15px;
+                        font-weight: 700;
+                        color: var(--text);
+                        letter-spacing: -0.2px;
+                }
+
+                .status-pill {
+                        display: flex;
+                        align-items: center;
+                        gap: 6px;
+                        background: rgba(0, 230, 118, 0.08);
+                        border: 1px solid rgba(0, 230, 118, 0.18);
+                        border-radius: 100px;
+                        padding: 5px 12px 5px 8px;
+                        font-size: 11px;
+                        font-weight: 600;
+                        color: var(--green);
+                        letter-spacing: 0.3px;
+                }
+
+                .dot {
+                        width: 6px;
+                        height: 6px;
+                        border-radius: 50%;
+                        background: var(--green);
+                        box-shadow: 0 0 8px var(--green);
+                        animation: dotPulse 2.4s ease-in-out infinite;
+                        flex-shrink: 0;
+                }
+
+                @keyframes dotPulse {
+
+                        0%,
+                        100% {
+                                opacity: 1;
+                        }
+
+                        50% {
+                                opacity: 0.3;
+                        }
+                }
+
+                .idle-center {
+                        display: flex;
+                        flex-direction: column;
+                        align-items: center;
+                        flex: 1;
+                        justify-content: center;
+                        padding: 28px 24px;
+                        width: 100%;
+                        max-width: 420px;
+                }
+
+                .hero-icon {
+                        width: 72px;
+                        height: 72px;
+                        border-radius: 50%;
+                        background: linear-gradient(145deg, rgba(47, 128, 255, 0.15), rgba(0, 212, 255, 0.08));
+                        border: 1px solid rgba(47, 128, 255, 0.2);
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                        margin-bottom: 28px;
+                        box-shadow: 0 0 0 12px rgba(47, 128, 255, 0.04), 0 0 40px rgba(47, 128, 255, 0.1);
+                        animation: heroFloat 4s ease-in-out infinite;
+                }
+
+                .hero-icon svg {
+                        width: 32px;
+                        height: 32px;
+                }
+
+                @keyframes heroFloat {
+
+                        0%,
+                        100% {
+                                transform: translateY(0);
+                        }
+
+                        50% {
+                                transform: translateY(-5px);
+                        }
+                }
+
+                .headline {
+                        text-align: center;
+                        margin-bottom: 32px;
+                }
+
+                .headline h1 {
+                        margin: 0 0 8px;
+                        font-size: 30px;
+                        font-weight: 800;
+                        letter-spacing: -0.5px;
+                        background: linear-gradient(150deg, #ffffff 0%, rgba(160, 200, 255, 0.9) 60%, rgba(0, 212, 255, 0.7) 100%);
+                        -webkit-background-clip: text;
+                        -webkit-text-fill-color: transparent;
+                        background-clip: text;
+                }
+
+                .headline p {
+                        margin: 0;
+                        font-size: 11px;
+                        color: var(--text-dim);
+                        letter-spacing: 2.5px;
+                        text-transform: uppercase;
+                }
+
+                #quickPassContainer {
+                        display: none;
+                        width: 100%;
+                        background: var(--card);
+                        border: 1px solid var(--border);
+                        border-radius: var(--radius-lg);
+                        padding: 20px;
+                        margin-bottom: 16px;
+                        transition: border-color 0.3s ease;
+                        animation: slideUp 0.4s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+                }
+
+                @keyframes slideUp {
+                        from {
+                                opacity: 0;
+                                transform: translateY(16px) scale(0.97);
+                        }
+
+                        to {
+                                opacity: 1;
+                                transform: none;
+                        }
+                }
+
+                .qp-header {
+                        display: flex;
+                        align-items: center;
+                        gap: 8px;
+                        margin-bottom: 14px;
+                }
+
+                .qp-icon {
+                        width: 30px;
+                        height: 30px;
+                        border-radius: 8px;
+                        background: linear-gradient(135deg, rgba(47, 128, 255, 0.2), rgba(0, 212, 255, 0.15));
+                        border: 1px solid rgba(47, 128, 255, 0.2);
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                }
+
+                .qp-icon svg {
+                        width: 15px;
+                        height: 15px;
+                }
+
+                .qp-label {
+                        font-size: 10px;
+                        letter-spacing: 1.5px;
+                        text-transform: uppercase;
+                        color: var(--blue);
+                        font-weight: 700;
+                }
+
+                #quickPassTitle {
+                        font-size: 17px;
+                        font-weight: 700;
+                        color: var(--text);
+                        margin-bottom: 4px;
+                }
+
+                #quickPassSub {
+                        font-size: 13px;
+                        color: var(--text-sub);
+                        margin-bottom: 18px;
+                        line-height: 1.5;
+                }
+
+                .btn-quick {
+                        width: 100%;
+                        padding: 14px;
+                        border-radius: var(--radius-md);
+                        background: linear-gradient(135deg, #2f80ff 0%, #1a6aff 100%);
+                        color: white;
+                        font-size: 15px;
+                        font-weight: 700;
+                        border: none;
+                        cursor: pointer;
+                        box-shadow: 0 4px 20px rgba(47, 128, 255, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.15);
+                        transition: all 0.2s ease;
+                        letter-spacing: 0.3px;
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                        gap: 8px;
+                }
+
+                .btn-quick svg {
+                        width: 16px;
+                        height: 16px;
+                }
+
+                .btn-quick:hover {
+                        box-shadow: 0 6px 28px rgba(47, 128, 255, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.15);
+                        transform: translateY(-1px);
+                }
+
+                .btn-quick:active {
+                        transform: scale(0.97);
+                        box-shadow: 0 2px 12px rgba(47, 128, 255, 0.25);
+                }
+
+                .btn-quick:disabled {
+                        background: rgba(255, 255, 255, 0.07);
+                        color: var(--text-dim);
+                        box-shadow: none;
+                        cursor: default;
+                        transform: none;
+                }
+
+                #callHint {
+                        display: none;
+                        font-size: 12px;
+                        color: var(--text-dim);
+                        text-align: center;
+                        margin-bottom: 20px;
+                        letter-spacing: 0.3px;
+                }
+
+                .call-wrap {
+                        display: flex;
+                        flex-direction: column;
+                        align-items: center;
+                        gap: 14px;
+                        width: 100%;
+                }
+
+                .call-ripple {
+                        position: relative;
+                        width: 88px;
+                        height: 88px;
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                }
+
+                .call-ripple::before,
+                .call-ripple::after {
+                        content: '';
+                        position: absolute;
+                        border-radius: 50%;
+                        border: 1.5px solid rgba(47, 128, 255, 0.3);
+                        animation: rippleOut 2.8s ease-out infinite;
+                }
+
+                .call-ripple::after {
+                        animation-delay: 1.4s;
+                }
+
+                @keyframes rippleOut {
+                        0% {
+                                width: 88px;
+                                height: 88px;
+                                opacity: 0.6;
+                        }
+
+                        100% {
+                                width: 150px;
+                                height: 150px;
+                                opacity: 0;
+                        }
+                }
+
+                #callBtn {
+                        position: relative;
+                        z-index: 1;
+                        width: 88px;
+                        height: 88px;
+                        border-radius: 50%;
+                        background: linear-gradient(145deg, #2f80ff, #1a5fdd);
+                        color: white;
+                        border: none;
+                        cursor: pointer;
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                        box-shadow: 0 8px 32px rgba(47, 128, 255, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.2);
+                        transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.2s ease;
+                }
+
+                #callBtn svg {
+                        width: 32px;
+                        height: 32px;
+                }
+
+                #callBtn:hover {
+                        transform: scale(1.06);
+                        box-shadow: 0 12px 40px rgba(47, 128, 255, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.2);
+                }
+
+                #callBtn:active {
+                        transform: scale(0.93);
+                }
+
+                #callBtnLabel {
+                        font-size: 13px;
+                        color: var(--text-sub);
+                        letter-spacing: 0.5px;
+                }
+
+                #idleStatus {
+                        font-size: 13px;
+                        color: var(--text-dim);
+                        text-align: center;
+                        padding: 0 24px;
+                }
+
+                #callingOverlay {
+                        display: none;
+                        position: fixed;
+                        top: 0;
+                        left: 0;
+                        width: 100%;
+                        height: 100%;
+                        background: var(--bg);
+                        flex-direction: column;
+                        align-items: center;
+                        z-index: 999;
+                        opacity: 0;
+                        transition: opacity 0.32s ease;
+                }
+
+                #callingOverlay.visible {
+                        opacity: 1;
+                }
+
+                #callingHeader {
+                        width: 100%;
+                        flex-shrink: 0;
+                        display: flex;
+                        align-items: center;
+                        justify-content: space-between;
+                        padding: 52px 24px 0;
+                }
+
+                #callingBrand {
+                        display: flex;
+                        align-items: center;
+                        gap: 9px;
+                }
+
+                .calling-logo-mark {
+                        width: 26px;
+                        height: 26px;
+                        background: linear-gradient(135deg, #2f80ff, #00d4ff);
+                        border-radius: 7px;
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                        box-shadow: 0 2px 8px rgba(47, 128, 255, 0.3);
+                }
+
+                .calling-logo-mark svg {
+                        width: 14px;
+                        height: 14px;
+                }
+
+                .calling-brand-name {
+                        font-size: 14px;
+                        font-weight: 700;
+                        color: rgba(232, 238, 255, 0.4);
+                }
+
+                .timer-wrap {
+                        display: flex;
+                        align-items: center;
+                        gap: 6px;
+                }
+
+                .timer-dot {
+                        width: 5px;
+                        height: 5px;
+                        border-radius: 50%;
+                        background: var(--red);
+                        box-shadow: 0 0 6px var(--red);
+                        animation: dotPulse 1.2s ease-in-out infinite;
+                }
+
+                #callTimer {
+                        font-size: 13px;
+                        color: var(--text-dim);
+                        font-variant-numeric: tabular-nums;
+                        letter-spacing: 1.5px;
+                }
+
+                #callingSubtitles {
+                        width: 100%;
+                        max-width: 500px;
+                        flex: 1;
+                        overflow-y: auto;
+                        padding: 24px 20px 12px;
+                        display: flex;
+                        flex-direction: column;
+                        gap: 10px;
+                        scroll-behavior: smooth;
+                }
+
+                #callingSubtitles::-webkit-scrollbar {
+                        display: none;
+                }
+
+                .sub-msg {
+                        max-width: 82%;
+                        padding: 12px 16px;
+                        border-radius: 18px;
+                        font-size: 15px;
+                        line-height: 1.65;
+                        word-break: break-all;
+                        animation: bubbleIn 0.25s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+                }
+
+                @keyframes bubbleIn {
+                        from {
+                                opacity: 0;
+                                transform: scale(0.88) translateY(8px);
+                        }
+
+                        to {
+                                opacity: 1;
+                                transform: none;
+                        }
+                }
+
+                .sub-label {
+                        font-size: 10px;
+                        font-weight: 700;
+                        letter-spacing: 1.2px;
+                        text-transform: uppercase;
+                        margin-bottom: 5px;
+                        color: var(--text-dim);
+                }
+
+                .sub-ai {
+                        background: rgba(255, 255, 255, 0.04);
+                        border: 1px solid rgba(255, 255, 255, 0.07);
+                        color: var(--text);
+                        align-self: flex-start;
+                        border-bottom-left-radius: 5px;
+                }
+
+                .sub-user {
+                        background: linear-gradient(135deg, rgba(47, 128, 255, 0.55), rgba(26, 95, 221, 0.6));
+                        color: white;
+                        align-self: flex-end;
+                        border-bottom-right-radius: 5px;
+                        border: 1px solid rgba(47, 128, 255, 0.25);
+                }
+
+                .sub-user .sub-label {
+                        text-align: right;
+                }
+
+                #callingCenter {
+                        flex-shrink: 0;
+                        display: flex;
+                        flex-direction: column;
+                        align-items: center;
+                        padding: 16px 0 10px;
+                }
+
+                .avatar-orbit {
+                        position: relative;
+                        width: 120px;
+                        height: 120px;
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                }
+
+                .avatar-orbit::before {
+                        content: '';
+                        position: absolute;
+                        border-radius: 50%;
+                        border: 1px solid rgba(47, 128, 255, 0.15);
+                        width: 110px;
+                        height: 110px;
+                        animation: orbitSpin 8s linear infinite;
+                }
+
+                .avatar-orbit::after {
+                        content: '';
+                        position: absolute;
+                        border-radius: 50%;
+                        border: 1px dashed rgba(47, 128, 255, 0.08);
+                        width: 120px;
+                        height: 120px;
+                        animation: orbitSpin 12s linear infinite reverse;
+                }
+
+                @keyframes orbitSpin {
+                        from {
+                                transform: rotate(0deg);
+                        }
+
+                        to {
+                                transform: rotate(360deg);
+                        }
+                }
+
+                .avatar-ring {
+                        position: relative;
+                        z-index: 1;
+                        width: 88px;
+                        height: 88px;
+                        border-radius: 50%;
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                }
+
+                .avatar-inner {
+                        width: 66px;
+                        height: 66px;
+                        border-radius: 50%;
+                        background: linear-gradient(145deg, #2f80ff, #1a5fdd);
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                        box-shadow: 0 6px 28px rgba(47, 128, 255, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.2);
+                        transition: background 0.5s ease, box-shadow 0.5s ease;
+                }
+
+                .avatar-inner svg {
+                        width: 28px;
+                        height: 28px;
+                }
+
+                .avatar-ring {
+                        animation: ringIdle 2.8s ease-out infinite;
+                }
+
+                @keyframes ringIdle {
+                        0% {
+                                box-shadow: 0 0 0 0 rgba(47, 128, 255, 0.35);
+                        }
+
+                        70% {
+                                box-shadow: 0 0 0 24px rgba(47, 128, 255, 0);
+                        }
+
+                        100% {
+                                box-shadow: 0 0 0 0 rgba(47, 128, 255, 0);
+                        }
+                }
+
+                @keyframes ringSpeaking {
+                        0% {
+                                box-shadow: 0 0 0 0 rgba(0, 230, 118, 0.5);
+                        }
+
+                        55% {
+                                box-shadow: 0 0 0 20px rgba(0, 230, 118, 0);
+                        }
+
+                        100% {
+                                box-shadow: 0 0 0 0 rgba(0, 230, 118, 0);
+                        }
+                }
+
+                .avatar-ring.speaking {
+                        animation: ringSpeaking 0.9s ease-out infinite;
+                }
+
+                .avatar-ring.speaking .avatar-inner {
+                        background: linear-gradient(145deg, #00c853, #009e3f);
+                        box-shadow: 0 6px 28px rgba(0, 200, 83, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.2);
+                }
+
+                .wave-bars {
+                        display: flex;
+                        align-items: center;
+                        gap: 3px;
+                        height: 20px;
+                        margin-top: 12px;
+                        opacity: 0;
+                        transition: opacity 0.3s ease;
+                }
+
+                .wave-bars.active {
+                        opacity: 1;
+                }
+
+                .wave-bar {
+                        width: 3px;
+                        border-radius: 2px;
+                        background: var(--green);
+                        animation: waveAnim 0.9s ease-in-out infinite;
+                }
+
+                .wave-bar:nth-child(1) {
+                        animation-delay: 0s;
+                        height: 6px;
+                }
+
+                .wave-bar:nth-child(2) {
+                        animation-delay: 0.15s;
+                        height: 14px;
+                }
+
+                .wave-bar:nth-child(3) {
+                        animation-delay: 0.3s;
+                        height: 20px;
+                }
+
+                .wave-bar:nth-child(4) {
+                        animation-delay: 0.15s;
+                        height: 14px;
+                }
+
+                .wave-bar:nth-child(5) {
+                        animation-delay: 0s;
+                        height: 6px;
+                }
+
+                @keyframes waveAnim {
+
+                        0%,
+                        100% {
+                                transform: scaleY(0.35);
+                                opacity: 0.5;
+                        }
+
+                        50% {
+                                transform: scaleY(1);
+                                opacity: 1;
+                        }
+                }
+
+                #callStatusText {
+                        font-size: 12px;
+                        color: var(--text-dim);
+                        margin-top: 10px;
+                        letter-spacing: 0.5px;
+                }
+
+                #hangupArea {
+                        flex-shrink: 0;
+                        display: flex;
+                        flex-direction: column;
+                        align-items: center;
+                        padding: 4px 0 max(52px, env(safe-area-inset-bottom, 52px));
+                }
+
+                #hangupBtn {
+                        width: 60px;
+                        height: 60px;
+                        border-radius: 50%;
+                        background: rgba(255, 68, 68, 0.1);
+                        border: 1px solid rgba(255, 68, 68, 0.25);
+                        color: var(--red);
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                        cursor: pointer;
+                        transition: all 0.18s ease;
+                        box-shadow: 0 4px 20px rgba(255, 68, 68, 0.1);
+                }
+
+                #hangupBtn svg {
+                        width: 24px;
+                        height: 24px;
+                }
+
+                #hangupBtn:hover {
+                        background: rgba(255, 68, 68, 0.18);
+                        box-shadow: 0 6px 28px rgba(255, 68, 68, 0.2);
+                        transform: scale(1.05);
+                }
+
+                #hangupBtn:active {
+                        background: rgba(255, 68, 68, 0.28);
+                        transform: scale(0.9);
+                }
+
+                #hangupLabel {
+                        color: var(--text-dim);
+                        font-size: 11px;
+                        margin-top: 9px;
+                        letter-spacing: 0.5px;
+                }
+        </style>
 </head>
+
 <body>
-    <div class="header">
-        <h1>AI 门卫室</h1>
-        <p>扫码登记，快速通行</p>
-    </div>
 
-    <div class="main-container">
-        <!-- 一键通行按钮区 (针对老用户) -->
-        <div id="quickPassContainer" style="display: none; width: 90%; margin-bottom: 30px;">
-            <button id="quickPassBtn" class="btn-quick">
-                <span id="quickPassTitle">一键通行</span>
-                <span id="quickPassSub" class="sub"></span>
-            </button>
-            <div style="color: #888; font-size: 14px; text-align: center;">或点击下方按钮呼叫门卫</div>
+        <div id="idlePage">
+                <div class="top-bar">
+                        <div class="logo">
+                                <div class="logo-mark">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15"
+                                                viewBox="0 0 24 24">
+                                                <path fill="#FFFFFF"
+                                                        d="M14.475 11.975Q15.5 10.95 15.5 9.5t-1.025-2.475T12 6T9.525 7.025T8.5 9.5t1.025 2.475T12 13t2.475-1.025M12 22q-3.65-.925-5.825-4T4 11.1V5l8-3l8 3v6.1q0 3.825-2.175 6.9T12 22m0-2.1q1.475-.475 2.613-1.487t1.987-2.288q-1.075-.55-2.238-.837T12 15t-2.363.288t-2.237.837q.85 1.275 1.988 2.288T12 19.9" />
+                                        </svg>
+                                </div>
+                                <div class="logo-name">AI 门卫室</div>
+                        </div>
+                        <div class="status-pill">
+                                <div class="dot"></div>
+                                在线
+                        </div>
+                </div>
+
+                <div class="idle-center">
+                        <div class="hero-icon">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 16 16">
+                                        <path fill="#2f80ff"
+                                                d="M1.75 16A1.75 1.75 0 0 1 0 14.25V1.75C0 .784.784 0 1.75 0h8.5C11.216 0 12 .784 12 1.75v12.5q0 .127-.018.25h2.268a.25.25 0 0 0 .25-.25V8.285a.25.25 0 0 0-.111-.208l-1.055-.703a.749.749 0 1 1 .832-1.248l1.055.703c.487.325.779.871.779 1.456v5.965A1.75 1.75 0 0 1 14.25 16h-3.5a.8.8 0 0 1-.197-.026q-.148.026-.303.026h-3a.75.75 0 0 1-.75-.75V14h-1v1.25a.75.75 0 0 1-.75.75Zm-.25-1.75c0 .138.112.25.25.25H4v-1.25a.75.75 0 0 1 .75-.75h2.5a.75.75 0 0 1 .75.75v1.25h2.25a.25.25 0 0 0 .25-.25V1.75a.25.25 0 0 0-.25-.25h-8.5a.25.25 0 0 0-.25.25ZM3.75 6h.5a.75.75 0 0 1 0 1.5h-.5a.75.75 0 0 1 0-1.5M3 3.75A.75.75 0 0 1 3.75 3h.5a.75.75 0 0 1 0 1.5h-.5A.75.75 0 0 1 3 3.75m4 3A.75.75 0 0 1 7.75 6h.5a.75.75 0 0 1 0 1.5h-.5A.75.75 0 0 1 7 6.75M7.75 3h.5a.75.75 0 0 1 0 1.5h-.5a.75.75 0 0 1 0-1.5M3 9.75A.75.75 0 0 1 3.75 9h.5a.75.75 0 0 1 0 1.5h-.5A.75.75 0 0 1 3 9.75M7.75 9h.5a.75.75 0 0 1 0 1.5h-.5a.75.75 0 0 1 0-1.5" />
+                                </svg>
+                        </div>
+
+                        <div class="headline">
+                                <h1>入园登记</h1>
+                                <p>Smart Gatehouse &middot; AI Powered</p>
+                        </div>
+
+                        <div id="quickPassContainer">
+                                <div class="qp-header">
+                                        <div class="qp-icon">
+                                                <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                                        <path d="M13 3L6 14H12L11 21L18 10H12L13 3Z" stroke="#2f80ff"
+                                                                stroke-width="1.8" stroke-linejoin="round" />
+                                                </svg>
+                                        </div>
+                                        <div class="qp-label">快速通行</div>
+                                </div>
+                                <div id="quickPassTitle">一键入园</div>
+                                <div id="quickPassSub"></div>
+                                <button class="btn-quick" id="quickPassBtn">
+                                        一键放行
+                                </button>
+                        </div>
+
+                        <div id="callHint">或通过语音呼叫门卫</div>
+
+                        <div class="call-wrap">
+                                <div class="call-ripple">
+                                        <button id="callBtn">
+                                                <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                                        <rect x="9" y="2" width="6" height="11" rx="3" stroke="white"
+                                                                stroke-width="2" />
+                                                        <path d="M5 10C5 14.4 8.1 18 12 18C15.9 18 19 14.4 19 10"
+                                                                stroke="white" stroke-width="2"
+                                                                stroke-linecap="round" />
+                                                        <line x1="12" y1="18" x2="12" y2="22" stroke="white"
+                                                                stroke-width="2" stroke-linecap="round" />
+                                                        <line x1="8" y1="22" x2="16" y2="22" stroke="white"
+                                                                stroke-width="2" stroke-linecap="round" />
+                                                </svg>
+                                        </button>
+                                </div>
+                                <div id="callBtnLabel">点击呼叫</div>
+                        </div>
+                </div>
+
+                <div id="idleStatus">准备就绪</div>
         </div>
-        
-        <!-- 交互按钮 -->
-        <button class="btn-call" id="callBtn">点击呼叫</button>
-        
-        <!-- 状态文字 -->
-        <div id="status">准备就绪</div>
 
-        <!-- 聊天字幕 -->
-        <div id="chat-box"></div>
-    </div>
+        <div id="callingOverlay">
+                <div id="callingHeader">
+                        <div id="callingBrand">
+                                <div class="calling-logo-mark">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24">
+                                                <path fill="#FFFFFF"
+                                                        d="M14.475 11.975Q15.5 10.95 15.5 9.5t-1.025-2.475T12 6T9.525 7.025T8.5 9.5t1.025 2.475T12 13t2.475-1.025M12 22q-3.65-.925-5.825-4T4 11.1V5l8-3l8 3v6.1q0 3.825-2.175 6.9T12 22m0-2.1q1.475-.475 2.613-1.487t1.987-2.288q-1.075-.55-2.238-.837T12 15t-2.363.288t-2.237.837q.85 1.275 1.988 2.288T12 19.9" />
+                                        </svg>
+                                </div>
+                                <div class="calling-brand-name">AI 门卫室</div>
+                        </div>
+                        <div class="timer-wrap">
+                                <div class="timer-dot"></div>
+                                <span id="callTimer">00:00</span>
+                        </div>
+                </div>
 
-    <script>
-        // ----------------------------------------------------
-        // 1. 静默身份识别 (LocalStorage 持久化免登录设计)
-        // ----------------------------------------------------
-        let userUuid = localStorage.getItem('visitor_uuid');
-        if (!userUuid) {
-            // 没有则生成类似 usr-xxxxxx 的随机 ID 视为新访客
-            userUuid = 'usr-' + Math.random().toString(36).substr(2, 9) + Date.now().toString(36);
-            localStorage.setItem('visitor_uuid', userUuid);
-        }
+                <div id="callingSubtitles"></div>
 
-        const callBtn = document.getElementById('callBtn');
-        const statusDiv = document.getElementById('status');
-        
-        let ws = null;
-        let audioContext = null;
-        let mediaStreamSource = null;
-        let processor = null;
-        
-        let playCtx = null;
-        let nextPlayTime = 0;
+                <div id="callingCenter">
+                        <div class="avatar-orbit">
+                                <div class="avatar-ring" id="avatarRing">
+                                        <div class="avatar-inner">
+                                                <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                                        <rect x="9" y="2" width="6" height="11" rx="3" stroke="white" stroke-width="2" />
+                                                        <path d="M5 10C5 14.4 8.1 18 12 18C15.9 18 19 14.4 19 10" stroke="white" stroke-width="2"
+                                                                stroke-linecap="round" />
+                                                        <line x1="12" y1="18" x2="12" y2="22" stroke="white" stroke-width="2" stroke-linecap="round" />
+                                                        <line x1="8" y1="22" x2="16" y2="22" stroke="white" stroke-width="2" stroke-linecap="round" />
+                                                </svg>
+                                        </div>
+                                </div>
+                        </div>
+                        <div class="wave-bars" id="waveBars">
+                                <div class="wave-bar"></div>
+                                <div class="wave-bar"></div>
+                                <div class="wave-bar"></div>
+                                <div class="wave-bar"></div>
+                                <div class="wave-bar"></div>
+                        </div>
+                        <div id="callStatusText">正在连接...</div>
+                </div>
 
-        let visitorData = null;
-        // 尝试获取访客历史信息
-        fetch(`/api/visitor/${userUuid}`)
-            .then(res => res.json())
-            .then(data => {
-                if (data.is_old) {
-                    visitorData = data;
-                    document.getElementById('quickPassContainer').style.display = 'block';
-                    document.getElementById('quickPassTitle').innerText = '一键入园';
-                    document.getElementById('quickPassSub').innerText = `去 ${data.company} ${data.reason}`;
+                <div id="hangupArea">
+                        <button id="hangupBtn">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 48 48">
+                                        <g fill="none" stroke="#FFFFFF" stroke-linecap="round" stroke-width="3">
+                                                <path stroke-linejoin="round"
+                                                        d="M28.643 28.641a20 20 0 0 0 4.997-8.321c.203-.668-.005-1.385-.498-1.878l-3.077-3.077a4 4 0 0 1-.885-4.314l2.466-6.165A3 3 0 0 1 34.43 3H35c5.523 0 10 4.477 10 10v1.332q0 .008-.006.013a.02.02 0 0 0-.005.013c-.223 8.339-3.687 15.87-9.178 21.379M24.19 32a20 20 0 0 1-3.87 1.64c-.668.203-1.385-.005-1.878-.498l-3.077-3.077a4 4 0 0 0-4.314-.885l-6.165 2.466A3 3 0 0 0 3 34.43V35c0 5.523 4.477 10 10 10h.5a31.35 31.35 0 0 0 18-5.646" />
+                                                <path d="m9 9l36 36" />
+                                        </g>
+                                </svg>
+                        </button>
+                        <div id="hangupLabel">挂断</div>
+                </div>
+        </div>
+
+        <script>
+                var userUuid = localStorage.getItem('visitor_uuid');
+                if (!userUuid) {
+                        userUuid = 'usr-' + Math.random().toString(36).substr(2, 9) + Date.now().toString(36);
+                        localStorage.setItem('visitor_uuid', userUuid);
                 }
-            })
-            .catch(e => console.error("获取访客信息失败", e));
 
-        document.getElementById('quickPassBtn').addEventListener('click', () => {
-            if (!visitorData) return;
-            const btn = document.getElementById('quickPassBtn');
-            document.getElementById('quickPassTitle').innerText = '正在登记...';
-            document.getElementById('quickPassSub').innerText = '请稍候';
-            btn.disabled = true;
-            
-            fetch('/api/visitor/quick_pass', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({
-                    user_uuid: userUuid,
-                    name: visitorData.name,
-                    phone: visitorData.phone,
-                    plate: visitorData.plate,
-                    company: visitorData.company,
-                    reason: visitorData.reason
-                })
-            }).then(res => res.json()).then(data => {
-                statusDiv.innerText = "✅ 登记完成，请直接通行！";
-                document.getElementById('quickPassTitle').innerText = '已放行';
-                document.getElementById('quickPassSub').innerText = '道闸已开，欢迎入园';
-                callBtn.style.display = 'none'; // 仅隐藏语音按钮
-            }).catch(e => {
-                document.getElementById('quickPassTitle').innerText = '登记失败';
-                document.getElementById('quickPassSub').innerText = '请检查网络或使用语音呼叫';
-                btn.disabled = false;
-            });
-        });
+                var callBtn = document.getElementById('callBtn');
+                var callBtnLabel = document.getElementById('callBtnLabel');
+                var idleStatus = document.getElementById('idleStatus');
+                var callingOverlay = document.getElementById('callingOverlay');
+                var idlePage = document.getElementById('idlePage');
+                var callingSubtitles = document.getElementById('callingSubtitles');
+                var avatarRing = document.getElementById('avatarRing');
+                var waveBars = document.getElementById('waveBars');
+                var callStatusText = document.getElementById('callStatusText');
 
-        let currentAiMsgNode = null;
-        const chatBox = document.getElementById('chat-box');
+                var ws = null, audioContext = null, mediaStreamSource = null, processor = null;
+                var playCtx = null, nextPlayTime = 0, audioMuted = false, visitorData = null;
+                var callTimerInterval = null, callSeconds = 0;
+                var currentAiMsgNode = null;
 
-        callBtn.addEventListener('click', async () => {
-            // 如果连接处于活跃状态，则挂断
-            if (ws && ws.readyState === WebSocket.OPEN) {
-                cleanup();
-                return;
-            }
+                function startCallTimer() {
+                        callSeconds = 0;
+                        document.getElementById('callTimer').innerText = '00:00';
+                        callTimerInterval = setInterval(function () {
+                                callSeconds++;
+                                var m = String(Math.floor(callSeconds / 60)).padStart(2, '0');
+                                var s = String(callSeconds % 60).padStart(2, '0');
+                                document.getElementById('callTimer').innerText = m + ':' + s;
+                        }, 1000);
+                }
+                function stopCallTimer() {
+                        if (callTimerInterval) { clearInterval(callTimerInterval); callTimerInterval = null; }
+                }
 
-            try {
-                statusDiv.innerText = '正在连接门卫...';
-                
-                // ----------------------------------------------------
-                // 2. 请求麦克风并初始化 AudioContext 抓取音频流
-                // ----------------------------------------------------
-                const stream = await navigator.mediaDevices.getUserMedia({ 
-                    audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } 
+                fetch('/api/visitor/' + userUuid)
+                        .then(function (r) { return r.json(); })
+                        .then(function (data) {
+                                if (data.is_old) {
+                                        visitorData = data;
+                                        document.getElementById('quickPassContainer').style.display = 'block';
+                                        document.getElementById('quickPassTitle').innerText = '欢迎回来' + (data.name ? '，' + data.name : '');
+                                        document.getElementById('quickPassSub').innerText = data.reason;
+                                        document.getElementById('callHint').style.display = 'block';
+                                }
+                        }).catch(function (e) { console.error('获取访客信息失败', e); });
+
+                document.getElementById('quickPassBtn').addEventListener('click', function () {
+                        if (!visitorData) return;
+                        var btn = document.getElementById('quickPassBtn');
+                        document.getElementById('quickPassTitle').innerText = '正在登记...';
+                        document.getElementById('quickPassSub').innerText = '请稍候';
+                        btn.disabled = true;
+                        fetch('/api/visitor/quick_pass', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({
+                                        user_uuid: userUuid, name: visitorData.name, phone: visitorData.phone,
+                                        plate: visitorData.plate, company: visitorData.company, reason: visitorData.reason
+                                })
+                        }).then(function (r) { return r.json(); }).then(function () {
+                                idleStatus.innerText = '登记完成，请直接通行！';
+                                document.getElementById('quickPassTitle').innerText = '已放行';
+                                document.getElementById('quickPassSub').innerText = '道闸已开，欢迎入园';
+                                document.querySelector('.call-ripple').style.display = 'none';
+                                callBtnLabel.style.display = 'none';
+                                document.getElementById('callHint').style.display = 'none';
+                        }).catch(function () {
+                                document.getElementById('quickPassTitle').innerText = '登记失败，请重试';
+                                document.getElementById('quickPassSub').innerText = '或点击呼叫门卫';
+                                btn.disabled = false;
+                        });
                 });
-                
-                // 火山识别要求 16000 采样率
-                audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
-                mediaStreamSource = audioContext.createMediaStreamSource(stream);
-                
-                // 创建一个 ScriptProcessorNode 用于提取原始 PCM 数据 (每次提取 4096 帧)
-                processor = audioContext.createScriptProcessor(4096, 1, 1);
-                mediaStreamSource.connect(processor);
-                processor.connect(audioContext.destination);
 
-                // ----------------------------------------------------
-                // 3. 构建 WebSocket 连接至 FastAPI 后端
-                // ----------------------------------------------------
-                const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-                ws = new WebSocket(`${protocol}//${window.location.host}/ws/voice/${userUuid}`);
-
-                ws.onopen = () => {
-                    callBtn.classList.add('calling');
-                    callBtn.innerText = '挂断';
-                    statusDiv.innerText = '🎙️ 正在通话中...请说话';
-                    
-                    // 当连接打开时，开始将 PCM 推流给后端
-                    processor.onaudioprocess = (e) => {
-                        if (ws.readyState === WebSocket.OPEN) {
-                            
-                            // 【解决插嘴与重音的半双工逻辑】：如果当前 AI 正在说话，直接丢弃用户的麦克风收音
-                            // 这是因为直接公放容易产生 Echo 导致 AI 听到自己的声音陷入循环
-                            if (playCtx && playCtx.currentTime < nextPlayTime) {
-                                return;
-                            }
-
-                            const float32Array = e.inputBuffer.getChannelData(0);
-                            // 将浏览器采集到的 Float32 (16k) 转换为火山要求的 Int16-PCM (小端序)
-                            const int16Array = new Int16Array(float32Array.length);
-                            for (let i = 0; i < float32Array.length; i++) {
-                                let s = Math.max(-1, Math.min(1, float32Array[i]));
-                                int16Array[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
-                            }
-                            ws.send(int16Array.buffer);
-                        }
-                    };
-                };
-
-                // ----------------------------------------------------
-                // 4. 解析后端下发的二进制音频与业务指令
-                // ----------------------------------------------------
-                ws.onmessage = async (event) => {
-                    if (event.data instanceof Blob) {
-                        // 收到 TTS 语音下发 (后端配置为了 24000Hz PCM)
-                        const arrayBuffer = await event.data.arrayBuffer();
-                        const int16Array = new Int16Array(arrayBuffer);
-                        const float32Array = new Float32Array(int16Array.length);
-                        for(let i = 0; i < int16Array.length; i++) {
-                            float32Array[i] = int16Array[i] / 0x8000;
-                        }
-                        
-                        if (!playCtx) {
-                            playCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
-                            nextPlayTime = playCtx.currentTime;
-                        }
-                        
-                        // 确保下一次播放时间不落后于当前时间
-                        if (nextPlayTime < playCtx.currentTime) {
-                            nextPlayTime = playCtx.currentTime;
-                        }
-
-                        const audioBuffer = playCtx.createBuffer(1, float32Array.length, 24000);
-                        audioBuffer.getChannelData(0).set(float32Array);
-                        const source = playCtx.createBufferSource();
-                        source.buffer = audioBuffer;
-                        source.connect(playCtx.destination);
-                        source.start(nextPlayTime);
-                        
-                        // 计算下一个 chunk 的起始播放时间
-                        nextPlayTime += audioBuffer.duration;
-                        
-                    } else if (typeof event.data === 'string') {
-                        // 解析后端下发的 JSON 指令与字幕
-                        const dat = JSON.parse(event.data);
-                        if (dat.status === 'completed') {
-                            statusDiv.innerText = "✅ 登记完成，请通行！";
-                            setTimeout(() => { 
-                                cleanup(false); 
-                                callBtn.innerText = '登记完成';
-                            }, 3500); 
-                        } else if (dat.type === 'ai_text') {
-                            chatBox.style.display = 'block';
-                            if (!currentAiMsgNode) {
+                function appendAiText(text) {
+                        if (!currentAiMsgNode) {
                                 currentAiMsgNode = document.createElement('div');
-                                currentAiMsgNode.className = 'chat-msg chat-ai';
-                                currentAiMsgNode.innerHTML = '<strong>门卫: </strong><span></span>';
-                                chatBox.appendChild(currentAiMsgNode);
-                            }
-                            currentAiMsgNode.querySelector('span').innerText += dat.text;
-                            chatBox.scrollTop = chatBox.scrollHeight;
-                        } else if (dat.type === 'ai_end') {
-                            currentAiMsgNode = null;
-                        } else if (dat.type === 'user_text') {
-                            chatBox.style.display = 'block';
-                            const div = document.createElement('div');
-                            div.className = 'chat-msg chat-user';
-                            div.innerHTML = `<strong>我: </strong><span>${dat.text}</span>`;
-                            chatBox.appendChild(div);
-                            chatBox.scrollTop = chatBox.scrollHeight;
-                            currentAiMsgNode = null;
+                                currentAiMsgNode.className = 'sub-msg sub-ai';
+                                currentAiMsgNode.innerHTML = '<div class="sub-label">门卫 AI</div><span></span>';
+                                callingSubtitles.appendChild(currentAiMsgNode);
                         }
-                    }
-                };
-
-                ws.onclose = () => {
-                    cleanup(false);
-                };
-
-                ws.onerror = (e) => {
-                    console.error("WS错误", e);
-                    statusDiv.innerText = "⚠️ 连接发生错误";
-                };
-
-            } catch (err) {
-                console.error(err);
-                if(err.name === "NotAllowedError") {
-                    statusDiv.innerText = "⚠️ 需允许麦克风权限才能呼叫";
-                } else {
-                    statusDiv.innerText = "获取麦克风失败: " + err.message;
+                        currentAiMsgNode.querySelector('span').innerText += text;
+                        callingSubtitles.scrollTop = callingSubtitles.scrollHeight;
+                        avatarRing.classList.add('speaking');
+                        waveBars.classList.add('active');
                 }
-            }
-        });
+                function endAiText() {
+                        currentAiMsgNode = null;
+                        avatarRing.classList.remove('speaking');
+                        waveBars.classList.remove('active');
+                }
+                function appendUserText(text) {
+                        currentAiMsgNode = null;
+                        avatarRing.classList.remove('speaking');
+                        waveBars.classList.remove('active');
+                        var div = document.createElement('div');
+                        div.className = 'sub-msg sub-user';
+                        div.innerHTML = '<div class="sub-label">我</div><span>' + text + '</span>';
+                        callingSubtitles.appendChild(div);
+                        callingSubtitles.scrollTop = callingSubtitles.scrollHeight;
+                }
 
-        function cleanup(resetText = true) {
-            callBtn.classList.remove('calling');
-            callBtn.innerText = '点击呼叫';
-            
-            if (resetText && statusDiv.innerText.includes('通话中')) {
-                statusDiv.innerText = '通话已结束';
-            }
-            
-            // 释放音频播放与监听资源
-            if (playCtx) { playCtx.close(); playCtx = null; nextPlayTime = 0; }
-            if (processor) { processor.disconnect(); processor = null; }
-            if (mediaStreamSource) { mediaStreamSource.disconnect(); mediaStreamSource = null; }
-            if (audioContext && audioContext.state !== 'closed') { audioContext.close(); }
-            
-            // 关闭连接
-            if (ws) {
-                if (ws.readyState === WebSocket.OPEN) ws.close();
-                ws = null;
-            }
-        }
-    </script>
+                function stopAudioQueue() {
+                        audioMuted = true;
+                        if (playCtx) { playCtx.close(); playCtx = null; nextPlayTime = 0; }
+                }
+
+                function enterCallingMode() {
+                        callingSubtitles.innerHTML = ''; currentAiMsgNode = null; audioMuted = false;
+                        avatarRing.classList.remove('speaking');
+                        waveBars.classList.remove('active');
+                        callStatusText.innerText = '正在连接...';
+                        idlePage.classList.add('fading-out');
+                        setTimeout(function () {
+                                idlePage.style.display = 'none'; idlePage.classList.remove('fading-out');
+                                callingOverlay.style.display = 'flex';
+                                void callingOverlay.offsetWidth; callingOverlay.classList.add('visible');
+                                startCallTimer();
+                        }, 320);
+                }
+                function exitCallingMode(message) {
+                        stopCallTimer(); callingOverlay.classList.remove('visible');
+                        setTimeout(function () {
+                                callingOverlay.style.display = 'none';
+                                if (message) idleStatus.innerText = message;
+                                idlePage.style.display = 'flex';
+                        }, 320);
+                }
+
+                callBtn.addEventListener('click', async function () {
+                        if (ws && ws.readyState === WebSocket.OPEN) { cleanup(true); return; }
+                        document.getElementById('quickPassContainer').style.display = 'none';
+                        document.getElementById('callHint').style.display = 'none';
+                        enterCallingMode();
+                        try {
+                                var stream = await navigator.mediaDevices.getUserMedia({
+                                        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+                                });
+                                audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+                                mediaStreamSource = audioContext.createMediaStreamSource(stream);
+                                processor = audioContext.createScriptProcessor(4096, 1, 1);
+                                mediaStreamSource.connect(processor); processor.connect(audioContext.destination);
+
+                                var protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+                                ws = new WebSocket(protocol + '//' + location.host + '/ws/voice/' + userUuid);
+
+                                ws.onopen = function () {
+                                        callStatusText.innerText = '通话中';
+                                        processor.onaudioprocess = function (e) {
+                                                if (!ws || ws.readyState !== WebSocket.OPEN) return;
+                                                var f32 = e.inputBuffer.getChannelData(0);
+                                                var i16 = new Int16Array(f32.length);
+                                                for (var i = 0; i < f32.length; i++) {
+                                                        var s = Math.max(-1, Math.min(1, f32[i]));
+                                                        i16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+                                                }
+                                                ws.send(i16.buffer);
+                                        };
+                                };
+
+                                ws.onmessage = async function (event) {
+                                        if (event.data instanceof Blob) {
+                                                if (audioMuted) return;
+                                                var ab = await event.data.arrayBuffer();
+                                                var i16 = new Int16Array(ab);
+                                                var f32 = new Float32Array(i16.length);
+                                                for (var i = 0; i < i16.length; i++) f32[i] = i16[i] / 0x8000;
+                                                if (!playCtx) { playCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 }); nextPlayTime = playCtx.currentTime; }
+                                                if (nextPlayTime < playCtx.currentTime) nextPlayTime = playCtx.currentTime;
+                                                var buf = playCtx.createBuffer(1, f32.length, 24000);
+                                                buf.getChannelData(0).set(f32);
+                                                var src = playCtx.createBufferSource(); src.buffer = buf; src.connect(playCtx.destination);
+                                                src.start(nextPlayTime); nextPlayTime += buf.duration;
+                                        } else if (typeof event.data === 'string') {
+                                                var dat = JSON.parse(event.data);
+                                                if (dat.status === 'completed') {
+                                                        callStatusText.innerText = '登记完成';
+                                                        setTimeout(function () { cleanup(false); exitCallingMode('登记完成，请通行！'); }, 2500);
+                                                } else if (dat.type === 'ai_text') { appendAiText(dat.text); }
+                                                else if (dat.type === 'ai_end') { endAiText(); }
+                                                else if (dat.type === 'user_text') { appendUserText(dat.text); }
+                                                else if (dat.type === 'stop_audio') { stopAudioQueue(); }
+                                                else if (dat.type === 'hang_up') {
+                                                        callStatusText.innerText = '正在转接人工服务';
+                                                        stopAudioQueue();
+                                                        setTimeout(function () { cleanup(false); exitCallingMode('已通知人工，请稍候'); }, 2000);
+                                                }
+                                        }
+                                };
+                                ws.onclose = function () { cleanup(false); };
+                                ws.onerror = function (e) { console.error('WS错误', e); cleanup(false); exitCallingMode('连接发生错误'); };
+                        } catch (err) {
+                                console.error(err);
+                                var msg = err.name === 'NotAllowedError' ? '需允许麦克风权限' : '连接失败: ' + err.message;
+                                cleanup(false); exitCallingMode(msg);
+                                if (visitorData) {
+                                        document.getElementById('quickPassContainer').style.display = 'block';
+                                        document.getElementById('callHint').style.display = 'block';
+                                }
+                        }
+                });
+
+                document.getElementById('hangupBtn').addEventListener('click', function () { cleanup(true); });
+
+                function cleanup(showEnded) {
+                        stopCallTimer();
+                        waveBars.classList.remove('active');
+                        if (playCtx) { playCtx.close(); playCtx = null; nextPlayTime = 0; }
+                        if (processor) { processor.disconnect(); processor = null; }
+                        if (mediaStreamSource) { mediaStreamSource.disconnect(); mediaStreamSource = null; }
+                        if (audioContext && audioContext.state !== 'closed') { audioContext.close(); audioContext = null; }
+                        if (ws) { if (ws.readyState === WebSocket.OPEN) ws.close(); ws = null; }
+                        audioMuted = false;
+                        if (showEnded) exitCallingMode('通话已结束');
+                }
+        </script>
 </body>
+
 </html>

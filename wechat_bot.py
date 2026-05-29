@@ -263,6 +263,45 @@ async def send_text_message(base_url: str, token: str, to_user_id: str, text: st
         except Exception as e:
             logging.error(f"调用发送消息接口异常: {e}")
 
+async def send_typing_indicator(base_url: str, token: str, ilink_user_id: str, context_token: str = None):
+    """
+    获取 typing_ticket 后发送"正在输入"状态，失败时静默忽略。
+    官方协议:
+      getconfig  → POST { ilink_user_id, context_token? } → { typing_ticket }
+      sendtyping → POST { ilink_user_id, typing_ticket, status:1 }
+    """
+    endpoint_config = f"{base_url.rstrip('/')}/ilink/bot/getconfig"
+    endpoint_typing = f"{base_url.rstrip('/')}/ilink/bot/sendtyping"
+
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        try:
+            # Step 1: 获取 typing_ticket
+            config_body: dict = {"ilink_user_id": ilink_user_id, "base_info": {"channel_version": CHANNEL_VERSION}}
+            if context_token:
+                config_body["context_token"] = context_token
+            config_bytes = json.dumps(config_body).encode("utf-8")
+            config_resp = await client.post(endpoint_config, content=config_bytes, headers=get_auth_headers(token, config_bytes))
+            if not config_resp.is_success:
+                logging.debug(f"getconfig 失败: {config_resp.status_code} {config_resp.text[:100]}")
+                return
+            typing_ticket = config_resp.json().get("typing_ticket")
+            if not typing_ticket:
+                logging.debug("getconfig 未返回 typing_ticket")
+                return
+
+            # Step 2: 发送"正在输入"（status=1 表示开始输入）
+            typing_body = {
+                "ilink_user_id": ilink_user_id,
+                "typing_ticket": typing_ticket,
+                "status": 1,
+                "base_info": {"channel_version": CHANNEL_VERSION}
+            }
+            typing_bytes = json.dumps(typing_body).encode("utf-8")
+            await client.post(endpoint_typing, content=typing_bytes, headers=get_auth_headers(token, typing_bytes))
+        except Exception as e:
+            logging.debug(f"发送 typing 状态失败（非致命）: {e}")
+
+
 async def get_updates(base_url: str, token: str, sync_buf: str = "") -> Dict[str, Any]:
     """
     长轮询接口，获取服务端推送的新消息。

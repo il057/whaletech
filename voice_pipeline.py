@@ -81,12 +81,13 @@ class VoicePipeline:
             base_rule = (
                 "你是一个干练且专业的停车场门卫，正在和前来园区的司机自然地对话。\n"
                 "【核心行为要求】：\n"
-                "1. 绝不讲废话，要求高效。不要说书面语，改为口语化的“去哪家公司”、“来干嘛的”、“车牌号和手机号多少”。\n"
-                "2. 需收集齐四个确切信息：【车牌号】、【来访单位】、【手机号】、【干什么】。如访客未提供完整，必须追问。\n"
-                "3. 【最重要规则】：当且仅当确定这四个信息已全部知晓或确认时，请【无需多言、不要做任何口语回复（不要说“好的放行”、“已通知”之类的话）】，直接闭嘴，必须且只能新起一行输出以下JSON格式以触发系统放行！\n"
+                "1. 绝不讲废话，要求高效。用简短口语追问，禁止书面表达，每次只追问最紧缺的一两项信息。\n"
+                "2. 需收集齐四项确切信息：【车牌号】【来访单位】【手机号】【来访事由】。缺哪项追问哪项，不得遗漏。\n"
+                "3. 【最重要规则】：四项信息全部确认后，立刻闭嘴，不作任何口语回复，只在新的一行输出以下JSON格式触发放行：\n"
                 "===JSON_BEGIN==={\"name\":\"\",\"phone\":\"\",\"plate\":\"\",\"company\":\"\",\"reason\":\"\"}===JSON_END===\n"
-                "4. 只要信息没收集齐，绝对不能输出JSON，必须继续开口发问！一旦收集齐，立刻只输出JSON，直接切断服务。\n"
-                "5. 【人工转接规则】：如果访客明确表示要找人工、叫人、转人工、或者明显对自动登记感到不耐烦，你必须立刻简短回应（如\"好的，我帮您叫人，请稍等一下\"），然后彻底停止一切追问，不得再要求访客提供任何信息，不得解释自己是系统。系统会自动通知人工处理。"
+                "   ⚠️ reason只填事由动作（送货/拜访/施工等），公司名一律填company字段。\n"
+                "4. 信息未收齐前绝对不输出JSON；一旦收齐立刻只输出JSON，不说任何其他话。\n"
+                "5. 【人工转接】：访客要求人工或明显不耐烦时，用自己的话自然简短告知对方稍等，然后立刻停止一切追问，不再索取任何信息，不解释自己是系统。系统会自动通知人工。"
             )
             
             if user and user["phone"]:
@@ -97,22 +98,22 @@ class VoicePipeline:
                 u_co = user["default_company"] or ""
                 
                 greeting = f"{u_name}先生/女士" if u_name else f"尾号{u_phone[-4:]}的车主"
-                self.initial_greeting = f"{greeting}，还是像上次一样去{u_co}{last_reason}吗？"
+                # SayHello 简短自然，用公司名而非 last_reason 字符串避免重复
+                self.initial_greeting = f"{greeting}，还是跟上次一样去{u_co}吗？"
                 
                 prompt = base_rule + (
-                    f"\n\n【当前访客背景】：后台查到这是老访客记录：手机[{u_phone}]、车牌[{u_plate}]、常去单位[{u_co}]，上次事由是[{last_reason}]。\n"
-                    f"请务必主动打招呼核对：'{greeting}您好！还是像上次一样去{u_co}{last_reason}吗？'\n"
-                    f"【肯定回答处理】：如果访客回答肯定（如\"是的\"、\"对\"、\"嗯\"），四项信息全部集齐，必须【不作任何回复】立刻利用已有信息输出JSON放行！\n"
-                    f"【否定回答处理】：如果访客说不是/不对/去别处/其他事由，说明单位或事由有变化。此时：\n"
-                    f"  - 车牌[{u_plate}]和手机[{u_phone}]已明确知晓，绝对不要再开口问！\n"
-                    f"  - 只需简短追问：'哦，那这次去哪里/干嘛的？' 即可。\n"
-                    f"  - 访客确认新的单位和事由后，立刻用已知车牌、手机组合输出JSON，无需任何额外口语回复。"
+                    f"\n\n【当前访客背景】：后台查到这是老访客记录：手机[{u_phone}]、车牌[{u_plate}]、常去单位[{u_co}]，上次来访目的[{last_reason}]。\n"
+                    f"你的开场白已经说了：'{self.initial_greeting}'，直接等访客回应，不要重复打招呼。\n"
+                    f"【肯定回答处理】：如果访客回答肯定（如\"是的\"、\"对\"、\"嗯\"、\"老样子\"），四项信息全部集齐，必须【不作任何口语回复】立刻利用已有信息输出JSON放行！\n"
+                    f"【否定回答处理】：如果访客说不是/不对/去别处/其他事由：\n"
+                    f"  - 车牌[{u_plate}]和手机[{u_phone}]已知，绝对不要再问！\n"
+                    f"  - 只简短追问目的事由和来访单位即可。访客确认后直接输出JSON。"
                 )
             else:
                 self.initial_greeting = "师傅，去哪家公司？来干嘛的？车牌号和手机号也报一下。"
                 prompt = base_rule + (
                     "\n\n【当前访客背景】：这是一位新访客，后台无记录。\n"
-                    "请主动开口问好并直接询问车牌、单位、事由和电话（尽量自然地合并提问，一口气讲完）。"
+                    f"你的开场白已经说了：'{self.initial_greeting}'，直接等访客回应，不要重复打招呼。"
                 )
                 
             logging.info(f"【DEBUG】本次生成的 Prompt: \n{prompt}")
@@ -197,6 +198,9 @@ class VoicePipeline:
                     hello_payload = json.dumps({"content": self.initial_greeting}).encode('utf-8')
                     await volc_ws.send(self._build_frame(msg_type=1, event_id=300, is_session=True, serialization=1, payload=hello_payload))
                     logging.info(f"✅ 首帧音频已发，SayHello 发送: {self.initial_greeting}")
+                    # SayHello 直接由火山 TTS 合成，不会走 550/ChatResponse，需手动将文字推给前端显示字幕
+                    await client_ws.send_json({"type": "ai_text", "text": self.initial_greeting})
+                    await client_ws.send_json({"type": "ai_end"})
                     
             except WebSocketDisconnect:
                 break
@@ -274,7 +278,10 @@ class VoicePipeline:
                                     
                                     # 如果模型开始输出边界符，立刻永久屏蔽后续TTS，防止客户端读出JSON代码
                                     if "===" in text_slice or "===" in self.llm_response_buffer:
-                                        self.mute_tts_permanently = True
+                                        if not self.mute_tts_permanently:
+                                            self.mute_tts_permanently = True
+                                            # 通知前端立刻清空音频播放队列，防止"等于等于等于"被读出
+                                            await client_ws.send_json({"type": "stop_audio"})
                                         
                                     if not self.mute_tts_permanently and text_slice.strip():
                                         await client_ws.send_json({"type": "ai_text", "text": text_slice})
@@ -294,7 +301,7 @@ class VoicePipeline:
                                         await client_ws.send_json({"type": "user_text", "text": user_text})
                                         # 累计轮数并检测人工意图
                                         self.turn_count += 1
-                                        await self._check_human_intent(user_text)
+                                        await self._check_human_intent(user_text, client_ws)
                                         
                             elif event_id == 599:
                                 # DialogCommonError — 火山对话通用错误
@@ -379,8 +386,8 @@ class VoicePipeline:
     ]
     MAX_TURNS_BEFORE_HUMAN = 8  # 超过此轮数仍未登记，触发人工
 
-    async def _check_human_intent(self, user_text: str):
-        """检测用户语音中是否含有人工协助意图，或对话轮数过多，触发后推送人工协助通知"""
+    async def _check_human_intent(self, user_text: str, client_ws: WebSocket = None):
+        """检测用户语音中是否含有人工协助意图，或对话轮数过多，触发后推送人工协助通知并挂断"""
         if self.human_notified or self.visit_recorded:
             return
 
@@ -426,6 +433,37 @@ class VoicePipeline:
                 partial.get("reason", ""),
                 trigger_reason
             )
+
+            # 将未完成的访客信息保存至 pending_human_cases 供保安事后补录
+            try:
+                conn = sqlite3.connect(DB_FILE)
+                cur = conn.cursor()
+                cur.execute("""
+                    INSERT INTO pending_human_cases
+                        (user_uuid, partial_name, partial_phone, partial_plate, partial_company, partial_reason, trigger_reason)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    self.user_uuid,
+                    partial.get("name", ""),
+                    partial.get("phone", ""),
+                    partial.get("plate", ""),
+                    partial.get("company", ""),
+                    partial.get("reason", ""),
+                    trigger_reason
+                ))
+                conn.commit()
+                conn.close()
+                logging.info("[人工协助] 已将待处理记录写入 pending_human_cases")
+            except Exception as db_err:
+                logging.error(f"保存 pending_human_cases 失败: {db_err}")
+
+            # 人工接管后挂断电话：通知前端停止并关闭连接
+            if client_ws:
+                try:
+                    await client_ws.send_json({"type": "hang_up"})
+                    await client_ws.close()
+                except Exception:
+                    pass
 
     def _save_to_db(self, name, phone, plate, company, reason):
         """新用户入库 / 老用户更新，并新增 visit 记录"""
