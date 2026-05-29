@@ -249,6 +249,7 @@ async def handle_wechat_message(base_url, token, to_user_id, message, context_to
 如果保安是在查询统计或分析记录（例如"今天来了几辆车"、"全面分析来访数据"、"找一下沪A12345的记录"、"有哪些待处理案件"），
 请写出能在SQLite执行的合法SQL查询语句，包在<sql>和</sql>之间。
 可以包含多条SELECT语句，用分号分隔，系统会逐条执行并汇总结果。
+注意姓名并非必须字段，车牌号和手机号才是关键线索，查询时优先用这两者匹配用户。
 重要：visits表的时间列名是 timestamp（不是 visit_time），查询时必须用 timestamp，例如 DATE(timestamp) = '2026-05-29'。
 
 【类型C：其他对话】

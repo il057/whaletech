@@ -36,7 +36,10 @@
 
 最初用的是企业微信的消息推送接口，验证通过后确实能成功推送来访提醒。
 
-![企业微信消息](asserts/wecom_notification.png "企业微信消息")
+<p align="center">
+  <img src="asserts/wecom_notification.png" alt="企业微信消息" width="560">
+  <br><em>企业微信消息推送效果</em>
+</p>
 
 但企业微信做到一半就卡住了——如果要实现"保安在同一窗口用自然语言查询记录"这个功能，就必须接入企业微信的 Webhook 或者内部应用消息接收，前置流程繁琐（公网 IP 白名单、消息加解密、Token 校验……）。更大的问题是：企业微信和普通微信本来就是两个 App，让保安再多装一个并不理想。
 
@@ -76,7 +79,10 @@
 
 访客只需要回答"是"，AI 就直接输出带完整信息的 JSON，整个流程不到 10 秒，比重新问一遍省去了大半时间，也节省了不少 token 消耗。
 
-![回访按钮展示](asserts/revisit_btn.png "回访按钮展示")
+<p align="center">
+  <img src="asserts/revisit_btn.png" alt="回访按钮展示" width="320">
+  <br><em>老访客一键回访界面（含历史行程预填）</em>
+</p>
 
 ---
 
@@ -109,6 +115,11 @@ Day 2 首先补上了 Day 1 留的坑：转人工。
 
 转人工后，后端会在数据库的 `pending_human_cases` 表里留一条记录，把已收集到的部分信息也存下来，方便门卫接手时快速了解情况。
 
+<p align="center">
+  <img src="asserts/human_assistance_request.jpg" alt="人工协助请求" width="560">
+  <br><em>转人工时推送至微信的通知卡片</em>
+</p>
+
 ---
 
 ## 保安侧：微信自然语言补录
@@ -122,6 +133,14 @@ Day 2 首先补上了 Day 1 留的坑：转人工。
 | **一般对话** | "帮我看看现在有哪些待处理" | 直接自然语言回答 |
 
 补录时同样做了数据合并：优先按手机号或车牌号匹配已有用户，命中就更新空白字段，不覆盖已有信息；没匹配到才创建新用户。同时会把对应的 `pending_human_cases` 记录标记为 `resolved`。
+
+<p align="center">
+  <img src="asserts/LLM_application.jpg" alt="查询数据库" width="300">
+  &nbsp;&nbsp;&nbsp;&nbsp;
+  <img src="asserts/visitor_manual_registration.jpg" alt="补录访客" width="300">
+  <br><em>左：自然语言查询数据库 &nbsp;&nbsp;&nbsp; 右：自然语言补录访客</em>
+</p>
+
 
 ---
 
@@ -191,7 +210,10 @@ async with _get_user_lock(to_user_id):
 - 新增通话计时器
 - 修复回访按钮流程中多余的"办理"字样
 
-![UI 展示](asserts/ui_display.png "UI 展示")
+<p align="center">
+  <img src="asserts/ui_display.png" alt="UI 展示" width="320">
+  <br><em>优化后的 H5 页面 UI（回访快捷通行状态）</em>
+</p>
 
 ---
 
