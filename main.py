@@ -20,6 +20,7 @@ from openai import AsyncOpenAI
 
 from database import DB_FILE, init_db
 from voice_pipeline import VoicePipeline
+from validator import validate_visitor_data
 from wechat_bot import (
     send_visitor_notification,
     ensure_session,
@@ -77,6 +78,20 @@ async def register_visitor_from_wechat(name: str, phone: str, plate: str, compan
     - 新增 visits 记录（时间取门卫提供的时间，否则取消息处理时刻）
     - 返回确认文字
     """
+    # -----------------------------------------------------------------------
+    # 数据清洗拦截层：校验 phone / plate 合法性，不合规则直接拒绝入库
+    # -----------------------------------------------------------------------
+    is_valid, failed_field, correction_prompt = validate_visitor_data(
+        {"phone": phone or "", "plate": plate or ""}
+    )
+    if not is_valid:
+        logging.warning(
+            f'[微信补录-数据校验] 拦截入库，字段 [{failed_field}] 不合规 — '
+            f'phone="{phone}" plate="{plate}"'
+        )
+        # 直接把纠错指令作为回复，让大模型接管后续修正流程
+        return f"❌ 登记被拦截\n{correction_prompt}"
+    # -----------------------------------------------------------------------
     try:
         async with aiosqlite.connect(DB_FILE) as conn:
             conn.row_factory = aiosqlite.Row

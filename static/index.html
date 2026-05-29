@@ -1174,6 +1174,19 @@
                                                         stopAudioQueue();
                                                         // isAiSpeaking/vadAboveThreshold 已在 stopAudioQueue 里重置
                                                 }
+                                                else if (dat.type === 'resume_audio') {
+                                                        // 数据校验失败后后端主动解锁音频，确保下一轮 AI TTS 能正常播放
+                                                        audioMuted = false;
+                                                }
+                                                else if (dat.type === 'retract_ai_text') {
+                                                        // 撤回当前 AI 消息气泡（校验拦截时清除预-JSON 的矛盾话语）
+                                                        if (currentAiMsgNode && currentAiMsgNode.parentNode) {
+                                                                currentAiMsgNode.parentNode.removeChild(currentAiMsgNode);
+                                                        }
+                                                        currentAiMsgNode = null;
+                                                        avatarRing.classList.remove('speaking');
+                                                        waveBars.classList.remove('active');
+                                                }
                                                 else if (dat.type === 'hang_up') {
                                                         callStatusText.innerText = '正在转接人工服务';
                                                         isAiSpeaking = false;
