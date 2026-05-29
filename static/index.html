@@ -966,6 +966,13 @@
                 var callTimerInterval = null, callSeconds = 0;
                 var currentAiMsgNode = null;
 
+                // 全双工打断：VAD 状态变量
+                var isAiSpeaking = false;      // AI 是否正在播放 TTS 音频
+                var vadAboveThreshold = false; // 当前帧是否超过阴値
+                var vadStartTime = 0;          // 首次超阙値的时间戳
+                var VAD_THRESHOLD = 0.012;     // RMS 音量阙値（范围 0–1）
+                var VAD_DURATION_MS = 300;     // 持续超阙値需要的毫秒数
+
                 function startCallTimer() {
                         callSeconds = 0;
                         document.getElementById('callTimer').innerText = '00:00';
@@ -1049,6 +1056,8 @@
 
                 function stopAudioQueue() {
                         audioMuted = true;
+                        isAiSpeaking = false;
+                        vadAboveThreshold = false;
                         if (playCtx) { playCtx.close(); playCtx = null; nextPlayTime = 0; }
                 }
 
@@ -1096,6 +1105,30 @@
                                         processor.onaudioprocess = function (e) {
                                                 if (!ws || ws.readyState !== WebSocket.OPEN) return;
                                                 var f32 = e.inputBuffer.getChannelData(0);
+
+                                                // 全双工 VAD：AI 播音期间检测用户是否开口说话
+                                                if (isAiSpeaking) {
+                                                        var sumSq = 0;
+                                                        for (var vi = 0; vi < f32.length; vi++) sumSq += f32[vi] * f32[vi];
+                                                        var rms = Math.sqrt(sumSq / f32.length);
+                                                        if (rms > VAD_THRESHOLD) {
+                                                                if (!vadAboveThreshold) {
+                                                                        vadAboveThreshold = true;
+                                                                        vadStartTime = Date.now();
+                                                                } else if (Date.now() - vadStartTime >= VAD_DURATION_MS) {
+                                                                        // 持续超阙値 300ms → 发送打断信令
+                                                                        if (ws && ws.readyState === WebSocket.OPEN) {
+                                                                                ws.send(JSON.stringify({ action: 'interrupt' }));
+                                                                        }
+                                                                        isAiSpeaking = false;   // 防止重复触发
+                                                                        vadAboveThreshold = false;
+                                                                }
+                                                        } else {
+                                                                vadAboveThreshold = false;
+                                                        }
+                                                }
+
+                                                // 转换为 16-bit PCM 并发送给后端
                                                 var i16 = new Int16Array(f32.length);
                                                 for (var i = 0; i < f32.length; i++) {
                                                         var s = Math.max(-1, Math.min(1, f32[i]));
@@ -1108,6 +1141,9 @@
                                 ws.onmessage = async function (event) {
                                         if (event.data instanceof Blob) {
                                                 if (audioMuted) return;
+                                                // AI 正在播放音频，更新 VAD 状态
+                                                isAiSpeaking = true;
+                                                vadAboveThreshold = false;
                                                 var ab = await event.data.arrayBuffer();
                                                 var i16 = new Int16Array(ab);
                                                 var f32 = new Float32Array(i16.length);
@@ -1124,11 +1160,23 @@
                                                         callStatusText.innerText = '登记完成';
                                                         setTimeout(function () { cleanup(false); exitCallingMode('登记完成，请通行！'); }, 2500);
                                                 } else if (dat.type === 'ai_text') { appendAiText(dat.text); }
-                                                else if (dat.type === 'ai_end') { endAiText(); }
-                                                else if (dat.type === 'user_text') { appendUserText(dat.text); }
-                                                else if (dat.type === 'stop_audio') { stopAudioQueue(); }
+                                                else if (dat.type === 'ai_end') {
+                                                        endAiText();
+                                                        isAiSpeaking = false;   // AI 已说完，关闭 VAD
+                                                        vadAboveThreshold = false;
+                                                }
+                                                else if (dat.type === 'user_text') {
+                                                        appendUserText(dat.text);
+                                                        // 用户说完话，新一轮 AI 响应即将到来，恢复音频播放
+                                                        audioMuted = false;
+                                                }
+                                                else if (dat.type === 'stop_audio') {
+                                                        stopAudioQueue();
+                                                        // isAiSpeaking/vadAboveThreshold 已在 stopAudioQueue 里重置
+                                                }
                                                 else if (dat.type === 'hang_up') {
                                                         callStatusText.innerText = '正在转接人工服务';
+                                                        isAiSpeaking = false;
                                                         stopAudioQueue();
                                                         setTimeout(function () { cleanup(false); exitCallingMode('已通知人工，请稍候'); }, 2000);
                                                 }
@@ -1151,6 +1199,8 @@
 
                 function cleanup(showEnded) {
                         stopCallTimer();
+                        isAiSpeaking = false;
+                        vadAboveThreshold = false;
                         waveBars.classList.remove('active');
                         if (playCtx) { playCtx.close(); playCtx = null; nextPlayTime = 0; }
                         if (processor) { processor.disconnect(); processor = null; }

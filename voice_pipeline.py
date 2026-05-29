@@ -41,6 +41,7 @@ class VoicePipeline:
         self.hello_sent = False      # 是否已发送 SayHello（防重复）
         self.session_ready = False   # SessionStarted 是否已收到
         self.initial_greeting = ""   # AI 开场白，由 _build_system_role 计算
+        self._interrupt_flag = False # 全双工打断标志：True 时屏蔽当前轮次 TTS 帧
 
     def _build_frame(self, msg_type: int, event_id: int, serialization: int, payload: bytes = b"", is_session: bool = False) -> bytes:
         """根据 API 文档构建发往服务端的二进制协议数据帧"""
@@ -128,6 +129,21 @@ class VoicePipeline:
             logging.error(f"读取数据库构建 Prompt 失败: {e}")
             return "你是一个门卫，请自然地询问访客的车牌、手机、来访单位和事由。"
 
+    async def _handle_interrupt(self, client_ws: WebSocket):
+        """处理前端发来的打断信令：立即停止 TTS 回放，清空本轮 LLM 缓冲，重置状态机。"""
+        logging.info("⚡ 收到打断信令，停止 TTS 播放并重置当前轮次缓冲")
+        self._interrupt_flag = True
+        # 立即通知前端清空音频播放队列
+        try:
+            await client_ws.send_json({"type": "stop_audio"})
+        except Exception:
+            pass
+        # 丢弃本轮未完成的 LLM 响应，防止截断文本污染后续对话上下文
+        if not self.visit_recorded:
+            self.llm_response_buffer = ""
+            self.mute_tts_permanently = False
+        # _interrupt_flag 将在下一条 ASR 结果（event 451）到来时被自动清除
+
     async def connect_and_handle(self, client_ws: WebSocket):
         """主入口：建立双向 WebSocket 连接流"""
         # 与浏览器保持连接，接受字节流
@@ -192,19 +208,33 @@ class VoicePipeline:
             logging.error(f"语音流水线运行异常: {e}")
 
     async def _recv_from_client(self, client_ws: WebSocket, volc_ws):
-        """流式读取前端麦克风采集的 PCM 数据，立刻转发给大模型 (TaskRequest Event 200)"""
+        """流式读取前端消息：二进制帧为麦克风 PCM（转发给大模型），文本帧为 JSON 控制信令（本地处理）"""
         while True:
             try:
-                # 等待浏览器发送音频二进制帧
-                audio_data = await client_ws.receive_bytes()
-                # 构造 Audio-only 请求帧 (msg_type=2), event=200, serialization=0
-                frame = self._build_frame(msg_type=2, event_id=200, serialization=0, payload=audio_data)
-                await volc_ws.send(frame)
-                    
+                msg = await client_ws.receive()
+                if msg.get("type") == "websocket.disconnect":
+                    break
+
+                audio_data = msg.get("bytes")
+                text_data = msg.get("text")
+
+                if audio_data:
+                    # 音频 PCM 数据：构造 TaskRequest 帧 (msg_type=2, event=200) 并转发给火山引擎
+                    frame = self._build_frame(msg_type=2, event_id=200, serialization=0, payload=audio_data)
+                    await volc_ws.send(frame)
+                elif text_data:
+                    # JSON 控制信令
+                    try:
+                        signal = json.loads(text_data)
+                        if signal.get("action") == "interrupt":
+                            await self._handle_interrupt(client_ws)
+                    except Exception as parse_err:
+                        logging.warning(f"解析前端信令失败: {parse_err}")
+
             except WebSocketDisconnect:
                 break
             except Exception as e:
-                logging.error(f"接收前端音频错误: {e}")
+                logging.error(f"接收前端消息错误: {e}")
                 break
 
     async def _recv_from_volcengine(self, volc_ws, client_ws: WebSocket):
@@ -269,8 +299,8 @@ class VoicePipeline:
                                     
                             elif event_id == 352:
                                 # TTSResponse (大模型语音合成流)
-                                logging.debug(f"TTSResponse received, {len(payload)} bytes, muted={self.mute_tts_permanently}")
-                                if not self.mute_tts_permanently:
+                                logging.debug(f"TTSResponse received, {len(payload)} bytes, muted={self.mute_tts_permanently}, interrupt={self._interrupt_flag}")
+                                if not self.mute_tts_permanently and not self._interrupt_flag:
                                     await client_ws.send_bytes(payload)
                                 
                             elif event_id == 550:
@@ -301,6 +331,8 @@ class VoicePipeline:
                                 
                             elif event_id == 451:
                                 # ASRResponse (识别到的人声文字，供后台展示)
+                                # 用户开始新的发言 → 清除打断标志，允许下一轮 TTS 正常播放
+                                self._interrupt_flag = False
                                 if serialization == 1:
                                     info = json.loads(payload.decode('utf-8'))
                                     if info.get("results") and not info["results"][0].get("is_interim"):
