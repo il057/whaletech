@@ -467,14 +467,14 @@ async def quick_pass(req: QuickPassRequest):
     """
     async with aiosqlite.connect(DB_FILE) as conn:
         await conn.execute(
-            "INSERT INTO visits (user_uuid, visit_reason) VALUES (?, ?)",
-            (req.user_uuid, req.reason)
+            "INSERT INTO visits (user_uuid, visit_reason, timestamp) VALUES (?, ?, ?)",
+            (req.user_uuid, req.reason, datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
         )
         await conn.commit()
 
         # 统计本月来访次数
         async with conn.execute(
-            "SELECT COUNT(*) FROM visits WHERE user_uuid = ? AND strftime('%Y-%m', timestamp) = strftime('%Y-%m', 'now')",
+            "SELECT COUNT(*) FROM visits WHERE user_uuid = ? AND strftime('%Y-%m', timestamp) = strftime('%Y-%m', datetime('now', 'localtime'))",
             (req.user_uuid,)
         ) as cur:
             row = await cur.fetchone()

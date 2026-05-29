@@ -7,7 +7,8 @@ import uuid
 import struct
 import logging
 import asyncio
-import sqlite3          # 仅用于 asyncio.to_thread 包装的同步辅助函数
+import sqlite3
+from datetime import datetime          # 仅用于 asyncio.to_thread 包装的同步辅助函数
 import websockets
 from fastapi import WebSocket, WebSocketDisconnect
 from wechat_bot import send_visitor_notification, send_human_required_notification
@@ -575,7 +576,7 @@ class VoicePipeline:
             cur  = conn.cursor()
             cur.execute(
                 "SELECT COUNT(*) FROM visits WHERE user_uuid = ? "
-                "AND strftime('%Y-%m', timestamp) = strftime('%Y-%m', 'now')",
+                "AND strftime('%Y-%m', timestamp) = strftime('%Y-%m', datetime('now', 'localtime'))",
                 (user_uuid,)
             )
             count = cur.fetchone()[0]
@@ -676,8 +677,8 @@ class VoicePipeline:
                 cur.execute(
                     """INSERT INTO pending_human_cases
                        (user_uuid, partial_name, partial_phone, partial_plate,
-                        partial_company, partial_reason, trigger_reason)
-                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                        partial_company, partial_reason, trigger_reason, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                     params
                 )
                 conn.commit()
@@ -688,7 +689,8 @@ class VoicePipeline:
                 (self.user_uuid,
                  partial.get("name",""), partial.get("phone",""),
                  partial.get("plate",""), partial.get("company",""),
-                 partial.get("reason",""), trigger)
+                 partial.get("reason",""), trigger,
+                 datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
             )
         except Exception as e:
             logging.error(f"保存 pending_human_cases 失败: {e}")
@@ -714,9 +716,10 @@ class VoicePipeline:
                        default_company=excluded.default_company""",
                 (self.user_uuid, phone, name, plate, company)
             )
+            local_now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             cur.execute(
-                "INSERT INTO visits (user_uuid, visit_reason) VALUES (?, ?)",
-                (self.user_uuid, reason)
+                "INSERT INTO visits (user_uuid, visit_reason, timestamp) VALUES (?, ?, ?)",
+                (self.user_uuid, reason, local_now)
             )
             conn.commit()
             conn.close()

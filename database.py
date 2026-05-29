@@ -34,7 +34,7 @@ async def init_db():
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     user_uuid TEXT,              -- 关联的访客UUID
                     visit_reason TEXT,           -- 来访事由
-                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP, -- 记录创建时间
+                    timestamp DATETIME DEFAULT (datetime('now', 'localtime')), -- 记录创建时间（本地时间）
                     FOREIGN KEY (user_uuid) REFERENCES users (uuid)
                 )
             ''')
@@ -52,7 +52,7 @@ async def init_db():
                     partial_reason TEXT,         -- 已采集的事由
                     trigger_reason TEXT,         -- 触发人工的原因
                     status TEXT DEFAULT 'pending', -- 状态：pending / resolved
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    created_at DATETIME DEFAULT (datetime('now', 'localtime')),
                     FOREIGN KEY (user_uuid) REFERENCES users (uuid)
                 )
             ''')
