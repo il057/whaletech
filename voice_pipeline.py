@@ -7,7 +7,7 @@ import uuid
 import struct
 import logging
 import asyncio
-import sqlite3
+import sqlite3          # 仅用于 asyncio.to_thread 包装的同步辅助函数
 import websockets
 from fastapi import WebSocket, WebSocketDisconnect
 from wechat_bot import send_visitor_notification, send_human_required_notification
@@ -78,7 +78,12 @@ class VoicePipeline:
     # System Prompt 构建
     # ─────────────────────────────────────────────────────────────────────────
     def _build_system_role(self) -> str:
-        """首次 session：读历史数据，构造完整 System Prompt"""
+        """首次 session：读历史数据，构造完整 System Prompt。
+
+        注意：本方法是同步的，调用方 connect_and_handle 应通过
+        asyncio.to_thread(_build_system_role_sync, self.user_uuid) 调用，
+        避免阻塞事件循环。此处保留同步签名供 to_thread 内部使用。
+        """
         try:
             conn = sqlite3.connect(DB_FILE)
             conn.row_factory = sqlite3.Row
@@ -233,7 +238,9 @@ class VoicePipeline:
                     f"[Pipeline] 纠错 session，追问字段={self._correction_context['invalid_field']}"
                 )
             else:
-                system_role            = self._build_system_role()
+                # _build_system_role 内含同步 sqlite3.connect，用 to_thread
+                # 防止阻塞事件循环，让其他 WebSocket 连接正常调度
+                system_role            = await asyncio.to_thread(self._build_system_role)
                 self._current_greeting = self.initial_greeting
 
             # ── 建立 Volcengine 连接 ─────────────────────────────────────
@@ -560,17 +567,22 @@ class VoicePipeline:
             return
 
         # ── 校验通过：入库 + 企业微信通知 ───────────────────────────────
-        self._save_to_db(name, phone, plate, company, reason)
+        # _save_to_db 和月统计均含同步 sqlite3.connect，offload 到线程池
+        await asyncio.to_thread(self._save_to_db, name, phone, plate, company, reason)
 
-        conn = sqlite3.connect(DB_FILE)
-        cur  = conn.cursor()
-        cur.execute(
-            "SELECT COUNT(*) FROM visits WHERE user_uuid = ? "
-            "AND strftime('%Y-%m', timestamp) = strftime('%Y-%m', 'now')",
-            (self.user_uuid,)
-        )
-        month_count = cur.fetchone()[0]
-        conn.close()
+        def _query_month_count(user_uuid: str) -> int:
+            conn = sqlite3.connect(DB_FILE)
+            cur  = conn.cursor()
+            cur.execute(
+                "SELECT COUNT(*) FROM visits WHERE user_uuid = ? "
+                "AND strftime('%Y-%m', timestamp) = strftime('%Y-%m', 'now')",
+                (user_uuid,)
+            )
+            count = cur.fetchone()[0]
+            conn.close()
+            return count
+
+        month_count = await asyncio.to_thread(_query_month_count, self.user_uuid)
 
         success = await send_visitor_notification(
             name, plate, phone, company, reason,
@@ -628,16 +640,20 @@ class VoicePipeline:
 
         if not partial.get("phone") or not partial.get("plate"):
             try:
-                conn = sqlite3.connect(DB_FILE)
-                conn.row_factory = sqlite3.Row
-                cur  = conn.cursor()
-                cur.execute("SELECT * FROM users WHERE uuid = ?", (self.user_uuid,))
-                row  = cur.fetchone()
-                conn.close()
+                def _fetch_user_sync(user_uuid: str) -> dict:
+                    conn = sqlite3.connect(DB_FILE)
+                    conn.row_factory = sqlite3.Row
+                    cur  = conn.cursor()
+                    cur.execute("SELECT * FROM users WHERE uuid = ?", (user_uuid,))
+                    row  = cur.fetchone()
+                    conn.close()
+                    return dict(row) if row else {}
+
+                row = await asyncio.to_thread(_fetch_user_sync, self.user_uuid)
                 if row:
                     for k, col in [("name","name"), ("phone","phone"),
                                    ("plate","default_plate"), ("company","default_company")]:
-                        if not partial.get(k) and row[col]:
+                        if not partial.get(k) and row.get(col):
                             partial[k] = row[col]
             except Exception as e:
                 logging.error(f"人工通知时读取 DB 失败: {e}")
@@ -654,20 +670,26 @@ class VoicePipeline:
             partial.get("reason",""), trigger
         )
         try:
-            conn = sqlite3.connect(DB_FILE)
-            cur  = conn.cursor()
-            cur.execute(
-                """INSERT INTO pending_human_cases
-                   (user_uuid, partial_name, partial_phone, partial_plate,
-                    partial_company, partial_reason, trigger_reason)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            def _insert_pending_case(params: tuple) -> None:
+                conn = sqlite3.connect(DB_FILE)
+                cur  = conn.cursor()
+                cur.execute(
+                    """INSERT INTO pending_human_cases
+                       (user_uuid, partial_name, partial_phone, partial_plate,
+                        partial_company, partial_reason, trigger_reason)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    params
+                )
+                conn.commit()
+                conn.close()
+
+            await asyncio.to_thread(
+                _insert_pending_case,
                 (self.user_uuid,
                  partial.get("name",""), partial.get("phone",""),
                  partial.get("plate",""), partial.get("company",""),
                  partial.get("reason",""), trigger)
             )
-            conn.commit()
-            conn.close()
         except Exception as e:
             logging.error(f"保存 pending_human_cases 失败: {e}")
 

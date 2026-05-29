@@ -31,21 +31,44 @@ from wechat_bot import (
     DEFAULT_BASE_URL
 )
 
-# 每个用户的对话历史，key = from_user_id，value = [{role, content}, ...]
+# ── 对话历史存储 ─────────────────────────────────────────────────────────────
+# key = to_user_id（微信用户 ID），value = [{role, content}, ...]
 # 保留最近 MAX_HISTORY_TURNS 轮（每轮 = user + assistant 各一条）
-_user_histories: dict = {}
+#
+# 安全原则：
+#   1. _get_history_snapshot() 返回独立副本，调用方无法意外写入共享存储。
+#   2. _get_user_lock() 为每个用户分配独占的 asyncio.Lock，确保同一用户的
+#      并发消息按序处理，杜绝历史条目乱序或重复写入。
+# ─────────────────────────────────────────────────────────────────────────────
+_user_histories: dict[str, list] = {}
+_user_locks:     dict[str, asyncio.Lock] = {}
 MAX_HISTORY_TURNS = 5
 
-def _get_history(user_id: str) -> list:
-    return _user_histories.get(user_id, [])
 
-def _append_history(user_id: str, user_msg: str, assistant_msg: str):
+def _get_user_lock(user_id: str) -> asyncio.Lock:
+    """为每个用户惰性创建一把专属 asyncio.Lock。
+
+    在单线程 asyncio 事件循环中，dict 的 check-then-set 之间不存在 await，
+    不会有其他协程插入，因此该函数本身是安全的。
+    """
+    if user_id not in _user_locks:
+        _user_locks[user_id] = asyncio.Lock()
+    return _user_locks[user_id]
+
+
+def _get_history_snapshot(user_id: str) -> list:
+    """返回历史记录的 *浅拷贝*，调用方持有独立列表，不会污染共享存储。"""
+    return list(_user_histories.get(user_id, []))
+
+
+def _append_history(user_id: str, user_msg: str, assistant_msg: str) -> None:
+    """追加一轮对话，超出上限时裁剪最旧条目。必须在持有 _get_user_lock(user_id) 时调用。"""
     hist = _user_histories.setdefault(user_id, [])
     hist.append({"role": "user",      "content": user_msg})
     hist.append({"role": "assistant", "content": assistant_msg})
-    # 超出上限时裁剪最早的
-    if len(hist) > MAX_HISTORY_TURNS * 2:
-        _user_histories[user_id] = hist[-(MAX_HISTORY_TURNS * 2):]
+    max_entries = MAX_HISTORY_TURNS * 2
+    if len(hist) > max_entries:
+        _user_histories[user_id] = hist[-max_entries:]
 
 # ---------------------------------------------------------------------------
 # SQL 安全拦截：仅允许 SELECT / WITH(CTE) 语句，拦截任何写操作
@@ -231,86 +254,92 @@ async def handle_wechat_message(base_url, token, to_user_id, message, context_to
 【类型C：其他对话】
 直接用自然语言回答，不包含以上任何格式标记。"""
 
-    # 先异步发送"正在输入"状态
+    # 发送"正在输入"状态（不访问任何共享状态，无需持锁，fire-and-forget）
     asyncio.create_task(send_typing_indicator(base_url, token, to_user_id, context_token))
 
-    # 拼装带历史上下文的消息列表
-    history = _get_history(to_user_id)
-    messages = [{"role": "system", "content": system_prompt}]
-    messages.extend(history)
-    messages.append({"role": "user", "content": message})
+    # ── 对同一 to_user_id 持锁 ────────────────────────────────────────────
+    # 保证"读取历史快照 → LLM 调用 → 追加历史"全程串行：
+    #   · 两条并发消息不会拿到相同的历史快照（避免 LLM 上下文重复）
+    #   · _append_history 不会与另一协程的写操作交错（历史条目顺序正确）
+    async with _get_user_lock(to_user_id):
+        # 取独立浅拷贝——绝不持有 _user_histories 内部列表的可变引用
+        history = _get_history_snapshot(to_user_id)
+        messages = [{"role": "system", "content": system_prompt}]
+        messages.extend(history)
+        messages.append({"role": "user", "content": message})
 
-    try:
-        resp1 = await openai_client.chat.completions.create(
-            model="deepseek-v4-flash-260425",
-            messages=messages
-        )
-        reply1 = resp1.choices[0].message.content
-
-        # 类型A：访客登记
-        if "===REGISTER_BEGIN===" in reply1 and "===REGISTER_END===" in reply1:
-            start = reply1.find("===REGISTER_BEGIN===") + len("===REGISTER_BEGIN===")
-            end = reply1.find("===REGISTER_END===")
-            json_str = reply1[start:end].strip()
-            data = json.loads(json_str)
-            confirm_msg = await register_visitor_from_wechat(
-                data.get("name", ""),
-                data.get("phone", ""),
-                data.get("plate", ""),
-                data.get("company", ""),
-                data.get("reason", ""),
-                data.get("visit_time", "") or None
-            )
-            await send_text_message(base_url, token, to_user_id, confirm_msg, context_token)
-            _append_history(to_user_id, message, confirm_msg)
-            return
-
-        # 类型B：SQL 查询——支持多条语句，逐条执行并汇总结果
-        sql_match = re.search(r'<sql>(.*?)</sql>', reply1, re.IGNORECASE | re.DOTALL)
-        if sql_match:
-            raw_sql = sql_match.group(1).strip()
-            # 按分号拆分，过滤空语句
-            statements = [s.strip() for s in raw_sql.split(';') if s.strip()]
-            all_results = []
-            async with aiosqlite.connect(DB_FILE) as conn:
-                for stmt in statements:
-                    # ---- SQL 安全拦截：仅允许只读 SELECT 语句 ----
-                    if not _is_safe_select(stmt):
-                        logging.warning(f"[SQL 安全拦截] 非 SELECT 语句已被阻止: {stmt[:120]}")
-                        all_results.append({
-                            "sql": stmt,
-                            "error": "⚠️ 该语句已被安全策略拦截，仅允许执行 SELECT 查询。"
-                        })
-                        continue
-                    try:
-                        async with conn.execute(stmt) as cur:
-                            rows = await cur.fetchall()
-                            all_results.append({"sql": stmt, "rows": [list(r) for r in rows]})
-                    except Exception as sql_err:
-                        all_results.append({"sql": stmt, "error": str(sql_err)})
-                        logging.warning(f"SQL 子语句执行失败: {stmt} — {sql_err}")
-
-            resp2 = await openai_client.chat.completions.create(
+        try:
+            resp1 = await openai_client.chat.completions.create(
                 model="deepseek-v4-flash-260425",
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    *history,
-                    {"role": "user", "content": message},
-                    {"role": "assistant", "content": reply1},
-                    {"role": "user", "content": f"各条SQL执行结果如下：{all_results}\n请用自然语言向保安简短精准地汇报分析结论，不许出现任何SQL语句。"}
-                ]
+                messages=messages
             )
-            final_reply = resp2.choices[0].message.content
-        else:
-            # 类型C：直接回答
-            final_reply = reply1
+            reply1 = resp1.choices[0].message.content
 
-        await send_text_message(base_url, token, to_user_id, final_reply, context_token)
-        _append_history(to_user_id, message, final_reply)
+            # 类型A：访客登记
+            if "===REGISTER_BEGIN===" in reply1 and "===REGISTER_END===" in reply1:
+                start = reply1.find("===REGISTER_BEGIN===") + len("===REGISTER_BEGIN===")
+                end = reply1.find("===REGISTER_END===")
+                json_str = reply1[start:end].strip()
+                data = json.loads(json_str)
+                confirm_msg = await register_visitor_from_wechat(
+                    data.get("name", ""),
+                    data.get("phone", ""),
+                    data.get("plate", ""),
+                    data.get("company", ""),
+                    data.get("reason", ""),
+                    data.get("visit_time", "") or None
+                )
+                await send_text_message(base_url, token, to_user_id, confirm_msg, context_token)
+                _append_history(to_user_id, message, confirm_msg)
+                return
 
-    except Exception as e:
-        logging.error(f"处理保安微信消息时出错: {e}")
-        await send_text_message(base_url, token, to_user_id, "抱歉，处理消息时遇到系统异常，请稍后重试。", context_token)
+            # 类型B：SQL 查询——支持多条语句，逐条执行并汇总结果
+            # all_results 是函数局部变量，不存在跨请求共享
+            sql_match = re.search(r'<sql>(.*?)</sql>', reply1, re.IGNORECASE | re.DOTALL)
+            if sql_match:
+                raw_sql = sql_match.group(1).strip()
+                # 按分号拆分，过滤空语句
+                statements = [s.strip() for s in raw_sql.split(';') if s.strip()]
+                all_results: list = []
+                async with aiosqlite.connect(DB_FILE) as conn:
+                    for stmt in statements:
+                        # ---- SQL 安全拦截：仅允许只读 SELECT 语句 ----
+                        if not _is_safe_select(stmt):
+                            logging.warning(f"[SQL 安全拦截] 非 SELECT 语句已被阻止: {stmt[:120]}")
+                            all_results.append({
+                                "sql": stmt,
+                                "error": "⚠️ 该语句已被安全策略拦截，仅允许执行 SELECT 查询。"
+                            })
+                            continue
+                        try:
+                            async with conn.execute(stmt) as cur:
+                                rows = await cur.fetchall()
+                                all_results.append({"sql": stmt, "rows": [list(r) for r in rows]})
+                        except Exception as sql_err:
+                            all_results.append({"sql": stmt, "error": str(sql_err)})
+                            logging.warning(f"SQL 子语句执行失败: {stmt} — {sql_err}")
+
+                resp2 = await openai_client.chat.completions.create(
+                    model="deepseek-v4-flash-260425",
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        *history,
+                        {"role": "user", "content": message},
+                        {"role": "assistant", "content": reply1},
+                        {"role": "user", "content": f"各条SQL执行结果如下：{all_results}\n请用自然语言向保安简短精准地汇报分析结论，不许出现任何SQL语句。"}
+                    ]
+                )
+                final_reply = resp2.choices[0].message.content
+            else:
+                # 类型C：直接回答
+                final_reply = reply1
+
+            await send_text_message(base_url, token, to_user_id, final_reply, context_token)
+            _append_history(to_user_id, message, final_reply)
+
+        except Exception as e:
+            logging.error(f"处理保安微信消息时出错: {e}")
+            await send_text_message(base_url, token, to_user_id, "抱歉，处理消息时遇到系统异常，请稍后重试。", context_token)
 
 async def wechat_long_polling_loop():
     """
