@@ -111,7 +111,7 @@ async def register_visitor_from_wechat(name: str, phone: str, plate: str, compan
 
             # 4. 新增来访记录（时间优先取 LLM 从消息中解析的时间，兜底为当前时间）
             actual_time = visit_time if visit_time else datetime.now().strftime('%Y/%m/%d %H:%M')
-            visit_reason_str = f"前往{company}办理{reason}" if company and reason else (company or reason or "人工登记")
+            visit_reason_str = reason if reason else (company or "人工登记")
             await conn.execute(
                 "INSERT INTO visits (user_uuid, visit_reason, timestamp) VALUES (?, ?, ?)",
                 (user_uuid, visit_reason_str, actual_time)

@@ -87,7 +87,11 @@ class VoicePipeline:
                 "===JSON_BEGIN==={\"name\":\"\",\"phone\":\"\",\"plate\":\"\",\"company\":\"\",\"reason\":\"\"}===JSON_END===\n"
                 "   ⚠️ reason只填事由动作（送货/拜访/施工等），公司名一律填company字段。\n"
                 "4. 信息未收齐前绝对不输出JSON；一旦收齐立刻只输出JSON，不说任何其他话。\n"
-                "5. 【人工转接】：访客要求人工或明显不耐烦时，用自己的话自然简短告知对方稍等，然后立刻停止一切追问，不再索取任何信息，不解释自己是系统。系统会自动通知人工。"
+                "5. 【人工转接】：访客要求人工或明显不耐烦时，用自己的话自然简短告知对方稍等（一句话即可），然后立刻在新的一行单独输出===HUMAN_TRANSFER===，之后不说任何其他话，不解释自己是系统。\n"
+                "6. 【严禁幻觉/严禁复述】：\n"
+                "   - 绝对禁止朗读或复述访客说出的任何数字（手机号、车牌号等）。数字信息只存入JSON，不得开口说出。\n"
+                "   - 绝对禁止自行脑补、猜测、补全任何信息。如果没听清或信息不完整，只说\"没听清，再说一遍\"，绝不自行填充。\n"
+                "   - JSON中填写的所有内容必须是访客在本次通话中明确说出的原始内容，不得凭推测或常识编造。"
             )
             
             if user and user["phone"]:
@@ -104,7 +108,9 @@ class VoicePipeline:
                 prompt = base_rule + (
                     f"\n\n【当前访客背景】：后台查到这是老访客记录：手机[{u_phone}]、车牌[{u_plate}]、常去单位[{u_co}]，上次来访目的[{last_reason}]。\n"
                     f"你的开场白已经说了：'{self.initial_greeting}'，直接等访客回应，不要重复打招呼。\n"
-                    f"【肯定回答处理】：如果访客回答肯定（如\"是的\"、\"对\"、\"嗯\"、\"老样子\"），四项信息全部集齐，必须【不作任何口语回复】立刻利用已有信息输出JSON放行！\n"
+                    f"【肯定回答处理】：如果访客回答肯定（如\"是的\"、\"对\"、\"嗯\"、\"老样子\"、\"一样\"、\"还是一样\"），"
+                    f"四项信息全部确认，必须【不作任何口语回复】立刻输出以下JSON，字段直接用已知信息填充：\n"
+                    f"===JSON_BEGIN==={{\"name\":\"{u_name}\",\"phone\":\"{u_phone}\",\"plate\":\"{u_plate}\",\"company\":\"{u_co}\",\"reason\":\"{last_reason}\"}}===JSON_END===\n"
                     f"【否定回答处理】：如果访客说不是/不对/去别处/其他事由：\n"
                     f"  - 车牌[{u_plate}]和手机[{u_phone}]已知，绝对不要再问！\n"
                     f"  - 只简短追问目的事由和来访单位即可。访客确认后直接输出JSON。"
@@ -150,6 +156,9 @@ class VoicePipeline:
                             "format": "pcm_s16le",
                             "sample_rate": 16000,
                             "channel": 1
+                        },
+                        "vad": {
+                            "silence_duration_ms": 700  # 用户停顿 700ms 后才判定一句话结束，防止 AI 过早插嘴
                         }
                     },
                     "dialog": {
@@ -191,16 +200,6 @@ class VoicePipeline:
                 # 构造 Audio-only 请求帧 (msg_type=2), event=200, serialization=0
                 frame = self._build_frame(msg_type=2, event_id=200, serialization=0, payload=audio_data)
                 await volc_ws.send(frame)
-                
-                # 第一帧音频转发后（音频流已建立），若 SessionStarted 也已就绪，立刻发 SayHello
-                if self.session_ready and not self.hello_sent:
-                    self.hello_sent = True
-                    hello_payload = json.dumps({"content": self.initial_greeting}).encode('utf-8')
-                    await volc_ws.send(self._build_frame(msg_type=1, event_id=300, is_session=True, serialization=1, payload=hello_payload))
-                    logging.info(f"✅ 首帧音频已发，SayHello 发送: {self.initial_greeting}")
-                    # SayHello 直接由火山 TTS 合成，不会走 550/ChatResponse，需手动将文字推给前端显示字幕
-                    await client_ws.send_json({"type": "ai_text", "text": self.initial_greeting})
-                    await client_ws.send_json({"type": "ai_end"})
                     
             except WebSocketDisconnect:
                 break
@@ -258,10 +257,15 @@ class VoicePipeline:
                             payload = resp[offset+4 : offset+4+payload_size]
                             
                             if event_id == 150:
-                                # SessionStarted — 会话已就绪，标记 session_ready
-                                # SayHello 将在第一帧音频转发后发送，确保音频流已建立
+                                # SessionStarted — 会话已就绪，立刻发 SayHello（无需等待音频帧）
                                 self.session_ready = True
-                                logging.info("✅ SessionStarted 收到，等待首帧音频后发送 SayHello")
+                                if not self.hello_sent:
+                                    self.hello_sent = True
+                                    hello_payload = json.dumps({"content": self.initial_greeting}).encode('utf-8')
+                                    await volc_ws.send(self._build_frame(msg_type=1, event_id=300, is_session=True, serialization=1, payload=hello_payload))
+                                    logging.info(f"✅ SessionStarted 收到，SayHello 已发送: {self.initial_greeting}")
+                                    await client_ws.send_json({"type": "ai_text", "text": self.initial_greeting})
+                                    await client_ws.send_json({"type": "ai_end"})
                                     
                             elif event_id == 352:
                                 # TTSResponse (大模型语音合成流)
@@ -282,6 +286,10 @@ class VoicePipeline:
                                             self.mute_tts_permanently = True
                                             # 通知前端立刻清空音频播放队列，防止"等于等于等于"被读出
                                             await client_ws.send_json({"type": "stop_audio"})
+                                    
+                                    # 检测 AI 主动触发人工转接标记，立刻推送通知并挂断
+                                    if "===HUMAN_TRANSFER===" in self.llm_response_buffer and not self.human_notified:
+                                        asyncio.create_task(self._check_human_intent("转人工", client_ws))
                                         
                                     if not self.mute_tts_permanently and text_slice.strip():
                                         await client_ws.send_json({"type": "ai_text", "text": text_slice})
@@ -355,9 +363,9 @@ class VoicePipeline:
                 success = await send_visitor_notification(name, plate, phone, company, reason, notice_msg)
                 
                 if success:
-                    logging.info("【DEBUG】已成功将访客信息入库并通过企业微信送出")
+                    logging.info("【DEBUG】已成功将访客信息入库并通过微信送出")
                 else:
-                    logging.error("【DEBUG】访客信息企业微信推送失败！")
+                    logging.error("【DEBUG】访客信息微信推送失败！")
                 
                 self.visit_recorded = True
                 
@@ -486,7 +494,7 @@ class VoicePipeline:
             cur.execute("""
                 INSERT INTO visits (user_uuid, visit_reason)
                 VALUES (?, ?)
-            """, (self.user_uuid, f"前往{company}办理{reason}"))
+            """, (self.user_uuid, reason))
             
             conn.commit()
             conn.close()
