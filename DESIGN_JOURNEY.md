@@ -37,7 +37,7 @@
 最初用的是企业微信的消息推送接口，验证通过后确实能成功推送来访提醒。
 
 <p align="center">
-  <img src="asserts/wecom_notification.png" alt="企业微信消息" width="560">
+  <img src="asserts/wecom_visitor_alert.png" alt="企业微信消息" width="560">
   <br><em>企业微信消息推送效果</em>
 </p>
 
@@ -67,6 +67,11 @@
 
 选择留在普通微信而不是企业微信，主要是考虑到保安平时就用微信，不需要额外安装 App，并且"接收通知 + 自然语言问答"在一个对话框里完成，比在两个地方切来切去更顺手。
 
+<p align="center">
+  <img src="asserts/wechat_visitor_alert.jpg" alt="iLink 访客提醒推送" width="400">
+  <br><em>访客登记完成后通过 iLink 推送至保安微信的提醒卡片</em>
+</p>
+
 ---
 
 ## 额外功能：回访识别与一键回访
@@ -80,7 +85,7 @@
 访客只需要回答"是"，AI 就直接输出带完整信息的 JSON，整个流程不到 10 秒，比重新问一遍省去了大半时间，也节省了不少 token 消耗。
 
 <p align="center">
-  <img src="asserts/revisit_btn.png" alt="回访按钮展示" width="320">
+  <img src="asserts/h5_revisit_quickpass.png" alt="回访按钮展示" width="320">
   <br><em>老访客一键回访界面（含历史行程预填）</em>
 </p>
 
@@ -116,8 +121,10 @@ Day 2 首先补上了 Day 1 留的坑：转人工。
 转人工后，后端会在数据库的 `pending_human_cases` 表里留一条记录，把已收集到的部分信息也存下来，方便门卫接手时快速了解情况。
 
 <p align="center">
-  <img src="asserts/human_assistance_request.jpg" alt="人工协助请求" width="560">
-  <br><em>转人工时推送至微信的通知卡片</em>
+  <img src="asserts/wechat_human_transfer_active.jpg" alt="用户主动请求转人工" width="300">
+  &nbsp;&nbsp;&nbsp;&nbsp;
+  <img src="asserts/wechat_human_transfer_timeout.jpg" alt="超时自动转人工" width="300">
+  <br><em>左：用户主动触发转人工 &nbsp;&nbsp;&nbsp; 右：对话轮数超阈值后兜底转人工</em>
 </p>
 
 ---
@@ -135,9 +142,9 @@ Day 2 首先补上了 Day 1 留的坑：转人工。
 补录时同样做了数据合并：优先按手机号或车牌号匹配已有用户，命中就更新空白字段，不覆盖已有信息；没匹配到才创建新用户。同时会把对应的 `pending_human_cases` 记录标记为 `resolved`。
 
 <p align="center">
-  <img src="asserts/LLM_application.jpg" alt="查询数据库" width="300">
+  <img src="asserts/wechat_nlp_query.jpg" alt="查询数据库" width="300">
   &nbsp;&nbsp;&nbsp;&nbsp;
-  <img src="asserts/visitor_manual_registration.jpg" alt="补录访客" width="300">
+  <img src="asserts/wechat_guard_register.jpg" alt="补录访客" width="300">
   <br><em>左：自然语言查询数据库 &nbsp;&nbsp;&nbsp; 右：自然语言补录访客</em>
 </p>
 
@@ -211,7 +218,7 @@ async with _get_user_lock(to_user_id):
 - 修复回访按钮流程中多余的"办理"字样
 
 <p align="center">
-  <img src="asserts/ui_display.png" alt="UI 展示" width="320">
+  <img src="asserts/h5_main_ui.png" alt="UI 展示" width="320">
   <br><em>优化后的 H5 页面 UI（回访快捷通行状态）</em>
 </p>
 
@@ -345,6 +352,57 @@ CSV 导出时加了 UTF-8 BOM（`\ufeff`），Windows Excel 直接双击打开�
 这样门卫不需要知道后台地址，只需要跟机器人说"主管说要看数据"，机器人就会把链接和账号说明发过来——把发现入口的成本降到零。
 
 后台地址通过 `.env` 的 `ADMIN_URL` 字段配置，不填也能正常工作——机器人直接回复"路径为 /admin，与访客页面同域"。之所以设计成可选，是因为 cloudflared tunnel 每次启动都会随机生成新域名，没法提前写死。
+
+---
+
+## 每日来访简报：定时推送到微信
+
+物业管理人员不一定每天都会主动打开后台、也不会记得问机器人，但他们每天 18 点交班之前肯定会看一眼微信——这个时机适合推一条日报。
+
+### 实现逻辑
+
+后端在 `lifespan` 里同时启动两个常驻协程：一个是原有的长轮询循环（负责接收消息），另一个是新增的 `daily_report_loop`（负责定时推送）。两者并行运行，互不干扰。
+
+定时逻辑用 `asyncio.sleep` 实现——启动时精确计算距下一个整点还有多少秒，`sleep` 到点之后执行，而不是每分钟轮询判断一次，资源开销为零：
+
+```python
+now = datetime.now()
+target = now.replace(hour=DAILY_REPORT_HOUR, minute=0, second=0, microsecond=0)
+if now >= target:
+    target += timedelta(days=1)
+await asyncio.sleep((target - now).total_seconds())
+```
+
+推送时间通过 `.env` 的 `DAILY_REPORT_HOUR` 配置（默认 `18`），推送完后等待 70 秒再重新计算下一个目标时刻——多出的 70 秒是为了防止时钟漂移导致同一天在 18:00:00 和 18:00:01 各触发一次。
+
+### 简报内容
+
+每次到点后，后端先查数据库汇总四项数据：
+
+| 指标 | 查询逻辑 |
+|------|----------|
+| 当日来访总量 | `COUNT(*) WHERE DATE(timestamp) = today` |
+| 单位来访分布 | `GROUP BY default_company ORDER BY cnt DESC` |
+| 高峰时段 | `GROUP BY strftime('%H', timestamp) LIMIT 1` |
+| 当日待处理案件 | `COUNT(*) WHERE status='pending' AND DATE(created_at) = today` |
+
+原始统计数据喂给 LLM，让它生成一段不超过 200 字的口语化简报，直接推送给管理人员查看。如果 LLM 调用失败（网络异常、API 额度不足等），静默降级——原始统计表格直接作为推送内容发出，不会因为 AI 出问题而让整条推送链路挂掉：
+
+```python
+try:
+    resp = await openai_client.chat.completions.create(...)
+    ai_text = resp.choices[0].message.content.strip()
+except Exception as e:
+    logging.error(f"[日报] AI 生成简报失败: {e}")
+    ai_text = raw_data  # 降级到原始统计数据
+```
+
+推送时复用 `context_token` 机制——和来访提醒、人工协助通知走同一套投递逻辑，能正常投递的前提是保安当天发过至少一条消息（否则触发平台的约 10 条限制）。实际上每天交班时保安都会跟机器人互动，这个条件基本能满足。
+
+<p align="center">
+  <img src="asserts/wechat_daily_report.jpg" alt="每日来访简报" width="400">
+  <br><em>每日定时推送至微信的来访简报（含 AI 生成的口语化摘要）</em>
+</p>
 
 ---
 

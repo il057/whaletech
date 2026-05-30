@@ -12,3 +12,6 @@ __pycache__/
 
 # 忽略敏感的凭证文件
 .wechat_token.json
+
+#忽略测试文件
+tests/

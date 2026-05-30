@@ -10,7 +10,7 @@ import aiosqlite
 import logging
 import json
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
 import secrets
 import csv
@@ -30,6 +30,13 @@ from voice_pipeline import VoicePipeline
 # ADMIN_URL:      服务对外的根地址，用于在微信侧发送后台链接
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin123")
 ADMIN_URL      = os.getenv("ADMIN_URL", "")
+
+# ── 每日简报配置 ──────────────────────────────────────────────────────────────
+# DAILY_REPORT_HOUR: 每天定时推送的小时数（24 小时制），默认 18（即 18:00）
+try:
+    DAILY_REPORT_HOUR = int(os.getenv("DAILY_REPORT_HOUR", "18"))
+except ValueError:
+    DAILY_REPORT_HOUR = 18
 from validator import validate_visitor_data
 from wechat_bot import (
     send_visitor_notification,
@@ -38,6 +45,8 @@ from wechat_bot import (
     send_text_message,
     send_typing_indicator,
     update_user_context_token,
+    load_session,
+    get_user_context_token,
     DEFAULT_BASE_URL
 )
 
@@ -424,15 +433,137 @@ async def wechat_long_polling_loop():
             logging.error(f"长轮询轮次异常 (可能被降级或失联): {e}")
             await asyncio.sleep(2)
 
+# ── 每日来访简报定时推送 ──────────────────────────────────────────────────────
+
+async def _generate_daily_report() -> str:
+    """查询当天来访数据，调用 AI 生成简报，返回可直接推送的纯文本。"""
+    # 每次调用临时创建客户端，避免长时间 sleep 后连接池失效导致 Connection error
+    api_key = os.getenv("ARK_API_KEY")
+    openai_client = AsyncOpenAI(
+        base_url="https://ark.cn-beijing.volces.com/api/v3",
+        api_key=api_key,
+        timeout=30.0,
+        max_retries=2,
+    ) if api_key else None
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    async with aiosqlite.connect(DB_FILE) as conn:
+        conn.row_factory = aiosqlite.Row
+
+        async with conn.execute(
+            "SELECT COUNT(*) AS cnt FROM visits WHERE DATE(timestamp) = ?", (today,)
+        ) as cur:
+            total = (await cur.fetchone())["cnt"]
+
+        async with conn.execute("""
+            SELECT u.default_company AS company, COUNT(*) AS cnt
+            FROM visits v LEFT JOIN users u ON v.user_uuid = u.uuid
+            WHERE DATE(v.timestamp) = ?
+            GROUP BY u.default_company
+            ORDER BY cnt DESC
+        """, (today,)) as cur:
+            companies = await cur.fetchall()
+
+        async with conn.execute(
+            "SELECT COUNT(*) AS cnt FROM pending_human_cases WHERE DATE(created_at) = ? AND status = 'pending'",
+            (today,)
+        ) as cur:
+            pending = (await cur.fetchone())["cnt"]
+
+        async with conn.execute("""
+            SELECT strftime('%H', timestamp) AS hour, COUNT(*) AS cnt
+            FROM visits WHERE DATE(timestamp) = ?
+            GROUP BY hour ORDER BY cnt DESC LIMIT 1
+        """, (today,)) as cur:
+            peak_row = await cur.fetchone()
+
+    company_lines = "\n".join(
+        f"  · {r['company'] or '未知单位'}：{r['cnt']} 辆"
+        for r in companies
+    ) or "  · 暂无数据"
+    peak_info = f"{peak_row['hour']}:00 时段" if peak_row else "暂无"
+
+    raw_data = (
+        f"统计日期：{today}\n"
+        f"来访总量：{total} 辆\n"
+        f"来访高峰：{peak_info}\n"
+        f"单位分布：\n{company_lines}\n"
+        f"待处理人工案件：{pending} 件"
+    )
+    logging.info(f"[日报] 原始统计数据：\n{raw_data}")
+
+    if not openai_client:
+        return f"📊 每日来访简报 · {today}\n\n{raw_data}"
+
+    prompt = (
+        "你是物业门卫系统的日报助手。"
+        "以下是今日来访数据的原始统计，请据此生成一段简洁的中文日报简报，"
+        "语气专业、口语化，适合直接发给物业管理人员查阅。"
+        "不超过 200 字，不需要任何 Markdown 格式，纯文本即可。\n\n"
+        + raw_data
+    )
+    try:
+        resp = await openai_client.chat.completions.create(
+            model="deepseek-v4-flash-260425",
+            messages=[{"role": "user", "content": prompt}]
+        )
+        ai_text = resp.choices[0].message.content.strip()
+    except Exception as e:
+        logging.error(f"[日报] AI 生成简报失败: {e}")
+        ai_text = raw_data  # 降级到原始统计数据
+
+    return f"📊 每日来访简报 · {today}\n\n{ai_text}"
+
+
+async def daily_report_loop():
+    """
+    定时推送任务：每天 DAILY_REPORT_HOUR 整点生成并推送当日来访简报到微信。
+    使用 asyncio.sleep 精确等待到目标时刻，不轮询。
+    """
+    logging.info(f"[日报] 定时推送任务已启动，目标时间：每天 {DAILY_REPORT_HOUR:02d}:00")
+
+    while True:
+        now = datetime.now()
+        target = now.replace(hour=DAILY_REPORT_HOUR, minute=0, second=0, microsecond=0)
+        if now >= target:
+            target += timedelta(days=1)
+        wait_seconds = (target - now).total_seconds()
+        logging.info(
+            f"[日报] 下次推送将在 {target.strftime('%Y-%m-%d %H:%M:%S')}，"
+            f"等待 {wait_seconds / 3600:.1f} 小时"
+        )
+        await asyncio.sleep(wait_seconds)
+
+        try:
+            report_text = await _generate_daily_report()
+            session = load_session()
+            if not (session and session.get("token")):
+                logging.warning("[日报] 微信 session 未就绪，跳过本次推送")
+            else:
+                base_url = session.get("baseUrl", DEFAULT_BASE_URL)
+                token = session.get("token")
+                to_user_id = session.get("userId")
+                context_token = get_user_context_token(to_user_id) if to_user_id else None
+                await send_text_message(base_url, token, to_user_id, report_text, context_token)
+                logging.info("[日报] 推送成功")
+        except Exception as e:
+            logging.error(f"[日报] 生成或推送失败: {e}")
+
+        # 推送后等待 70 秒，防止时钟误差导致当天重复触发
+        await asyncio.sleep(70)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # 确保数据库与最新表结构同步（幂等操作）
     await init_db()
-    # 系统启动时，孵化常驻的微信协议轮询协程
+    # 系统启动时，孵化常驻的微信协议轮询协程和每日简报定时任务
     wechat_task = asyncio.create_task(wechat_long_polling_loop())
+    report_task = asyncio.create_task(daily_report_loop())
     yield
     # 系统停止时取消后台任务
     wechat_task.cancel()
+    report_task.cancel()
 
 app = FastAPI(lifespan=lifespan)
 
