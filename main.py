@@ -170,9 +170,10 @@ async def register_visitor_from_wechat(name: str, phone: str, plate: str, compan
             # 4. 新增来访记录（时间优先取 LLM 从消息中解析的时间，兜底为当前时间）
             actual_time = visit_time if visit_time else datetime.now().strftime('%Y/%m/%d %H:%M')
             visit_reason_str = reason if reason else (company or "人工登记")
+            # 写入当次来访快照，确保历史记录不受用户档案后续更新影响
             await conn.execute(
-                "INSERT INTO visits (user_uuid, visit_reason, timestamp) VALUES (?, ?, ?)",
-                (user_uuid, visit_reason_str, actual_time)
+                "INSERT INTO visits (user_uuid, name, phone, plate, company, visit_reason, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (user_uuid, name or "", phone or "", plate or "", company or "", visit_reason_str, actual_time)
             )
 
             # 5. 将最近一条匹配的 pending 案件标记为 resolved
@@ -243,8 +244,11 @@ async def handle_wechat_message(base_url, token, to_user_id, message, context_to
     db_schema = (
         "数据库表结构（SQL中字段名必须与此完全一致，不得自行更改）:\n"
         "TABLE users (uuid TEXT, name TEXT, phone TEXT, default_plate TEXT, default_company TEXT)\n"
-        "TABLE visits (id INTEGER, user_uuid TEXT, visit_reason TEXT, timestamp DATETIME)\n"
+        "TABLE visits (id INTEGER, user_uuid TEXT, name TEXT, phone TEXT, plate TEXT, company TEXT, visit_reason TEXT, timestamp DATETIME)\n"
         "  -- visits 表的时间列名是 timestamp，不是 visit_time、time 或其他名称\n"
+        "  -- name/phone/plate/company 为本次来访快照字段，存储当次登记的实际信息\n"
+        "  -- 查询时请用 COALESCE(v.name, u.name) 等形式兜底，以兼容旧记录快照字段为空的情况\n"
+        "  -- 示例: SELECT COALESCE(v.name,u.name) AS name, COALESCE(v.plate,u.default_plate) AS plate, COALESCE(v.company,u.default_company) AS company FROM visits v LEFT JOIN users u ON v.user_uuid=u.uuid\n"
         "  -- 按日期查询示例: WHERE DATE(timestamp) = '2026-05-29'\n"
         "  -- 按小时分布示例: strftime('%H', timestamp)\n"
         "TABLE pending_human_cases (id INTEGER, user_uuid TEXT, partial_name TEXT, partial_phone TEXT, "
@@ -614,8 +618,8 @@ async def quick_pass(req: QuickPassRequest):
     """
     async with aiosqlite.connect(DB_FILE) as conn:
         await conn.execute(
-            "INSERT INTO visits (user_uuid, visit_reason, timestamp) VALUES (?, ?, ?)",
-            (req.user_uuid, req.reason, datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+            "INSERT INTO visits (user_uuid, name, phone, plate, company, visit_reason, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (req.user_uuid, req.name, req.phone, req.plate, req.company, req.reason, datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
         )
         await conn.commit()
 
@@ -712,8 +716,12 @@ async def admin_visits(month: str = None, _: str = Depends(verify_admin)):
         conn.row_factory = aiosqlite.Row
         if month:
             sql = """
-                SELECT v.timestamp, u.name, u.default_plate AS plate,
-                       u.phone, u.default_company AS company, v.visit_reason AS reason
+                SELECT v.timestamp,
+                       COALESCE(v.name, u.name) AS name,
+                       COALESCE(v.plate, u.default_plate) AS plate,
+                       COALESCE(v.phone, u.phone) AS phone,
+                       COALESCE(v.company, u.default_company) AS company,
+                       v.visit_reason AS reason
                 FROM visits v LEFT JOIN users u ON v.user_uuid = u.uuid
                 WHERE strftime('%Y-%m', v.timestamp) = ?
                 ORDER BY v.timestamp DESC
@@ -721,8 +729,12 @@ async def admin_visits(month: str = None, _: str = Depends(verify_admin)):
             params = (month,)
         else:
             sql = """
-                SELECT v.timestamp, u.name, u.default_plate AS plate,
-                       u.phone, u.default_company AS company, v.visit_reason AS reason
+                SELECT v.timestamp,
+                       COALESCE(v.name, u.name) AS name,
+                       COALESCE(v.plate, u.default_plate) AS plate,
+                       COALESCE(v.phone, u.phone) AS phone,
+                       COALESCE(v.company, u.default_company) AS company,
+                       v.visit_reason AS reason
                 FROM visits v LEFT JOIN users u ON v.user_uuid = u.uuid
                 ORDER BY v.timestamp DESC LIMIT 500
             """
@@ -754,8 +766,12 @@ async def export_visits_csv(month: str = None, _: str = Depends(verify_admin)):
         conn.row_factory = aiosqlite.Row
         if month:
             sql = """
-                SELECT v.timestamp, u.name, u.default_plate, u.phone,
-                       u.default_company, v.visit_reason
+                SELECT v.timestamp,
+                       COALESCE(v.name, u.name),
+                       COALESCE(v.plate, u.default_plate),
+                       COALESCE(v.phone, u.phone),
+                       COALESCE(v.company, u.default_company),
+                       v.visit_reason
                 FROM visits v LEFT JOIN users u ON v.user_uuid = u.uuid
                 WHERE strftime('%Y-%m', v.timestamp) = ?
                 ORDER BY v.timestamp
@@ -763,8 +779,12 @@ async def export_visits_csv(month: str = None, _: str = Depends(verify_admin)):
             params = (month,)
         else:
             sql = """
-                SELECT v.timestamp, u.name, u.default_plate, u.phone,
-                       u.default_company, v.visit_reason
+                SELECT v.timestamp,
+                       COALESCE(v.name, u.name),
+                       COALESCE(v.plate, u.default_plate),
+                       COALESCE(v.phone, u.phone),
+                       COALESCE(v.company, u.default_company),
+                       v.visit_reason
                 FROM visits v LEFT JOIN users u ON v.user_uuid = u.uuid
                 ORDER BY v.timestamp
             """

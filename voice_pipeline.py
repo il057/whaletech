@@ -732,9 +732,10 @@ class VoicePipeline:
                 (self.user_uuid, phone, name, plate, company)
             )
             local_now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            # 写入当次来访快照，确保历史记录不受用户档案后续更新影响
             cur.execute(
-                "INSERT INTO visits (user_uuid, visit_reason, timestamp) VALUES (?, ?, ?)",
-                (self.user_uuid, reason, local_now)
+                "INSERT INTO visits (user_uuid, name, phone, plate, company, visit_reason, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (self.user_uuid, name, phone, plate, company, reason, local_now)
             )
             conn.commit()
             conn.close()
