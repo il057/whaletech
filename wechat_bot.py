@@ -10,6 +10,9 @@ from typing import Optional, Dict, Any
 import httpx
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+# 抑制 httpx/httpcore 在 INFO 级别打印每次轮询请求日志，保留 WARNING/ERROR。
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 DEFAULT_BASE_URL = "https://ilinkai.weixin.qq.com"
 BOT_TYPE = "3"
@@ -81,7 +84,6 @@ def load_session() -> Optional[Dict[str, Any]]:
         stored = data.get("context_tokens", {})
         if isinstance(stored, dict) and stored:
             _user_context_tokens.update(stored)
-            logging.info(f"[context_token] 从磁盘恢复了 {len(stored)} 个用户的 context_token")
         return data
     except Exception as e:
         logging.error(f"加载 Token 文件失败: {e}")

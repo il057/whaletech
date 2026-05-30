@@ -8,6 +8,7 @@ import struct
 import logging
 import asyncio
 import sqlite3
+import time
 from datetime import datetime          # 仅用于 asyncio.to_thread 包装的同步辅助函数
 import websockets
 from fastapi import WebSocket, WebSocketDisconnect
@@ -47,6 +48,7 @@ class VoicePipeline:
         self.visit_recorded = False
         self.human_notified = False
         self.turn_count     = 0
+        self.call_started_at = 0.0
 
         # 纠错状态（校验失败时设置，供下一 session 使用）
         self._correction_context: dict | None  = None
@@ -219,6 +221,7 @@ class VoicePipeline:
     # ─────────────────────────────────────────────────────────────────────────
     async def connect_and_handle(self, client_ws: WebSocket):
         await client_ws.accept()
+        self.call_started_at = time.perf_counter()
         logging.info(f"[Pipeline] 启动，user_uuid={self.user_uuid}")
 
         while True:
@@ -589,10 +592,22 @@ class VoicePipeline:
             name, plate, phone, company, reason,
             f"提示: 该访客本月已来访 {month_count} 次"
         )
+
+        elapsed_seconds = (
+            time.perf_counter() - self.call_started_at
+            if self.call_started_at > 0
+            else 0.0
+        )
         if success:
             logging.info("✅ 访客信息已入库并推送微信")
         else:
             logging.error("❌ 微信推送失败")
+
+        if elapsed_seconds > 0:
+            logging.info(
+                f"⏱️ 通话到推送完成耗时: {elapsed_seconds:.2f}s "
+                f"(目标 <= 25s, {'达标' if elapsed_seconds <= 25 else '超时'})"
+            )
 
         self.visit_recorded      = True
         self._correction_context = None   # 清空纠错状态
