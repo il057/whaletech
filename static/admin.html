@@ -1,0 +1,758 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>物业后台 · WhaleTech</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+:root{
+  --bg:#050b16;--bg2:#081020;
+  --card:rgba(255,255,255,0.035);--card-hi:rgba(255,255,255,0.06);
+  --border:rgba(255,255,255,0.07);--border-hi:rgba(47,128,255,0.3);
+  --blue:#2f80ff;--blue-dark:#1a5fdd;--blue-glow:rgba(47,128,255,0.22);
+  --cyan:#00d4ff;--green:#00e676;--green-dark:#00c853;--red:#ff4444;
+  --amber:#f59e0b;
+  --text:#e8eeff;--text-sub:rgba(232,238,255,0.42);--text-dim:rgba(232,238,255,0.2);
+  --radius-lg:20px;--radius-md:14px;--radius-sm:10px;
+}
+body{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Helvetica Neue",Arial,sans-serif;
+  margin:0;padding:0;background:var(--bg);min-height:100vh;color:var(--text);overflow-x:hidden;
+  -webkit-font-smoothing:antialiased}
+
+/* grid + glow overlay — identical to index.html */
+body::before{content:'';position:fixed;inset:0;z-index:0;pointer-events:none;
+  background-image:linear-gradient(rgba(47,128,255,0.025) 1px,transparent 1px),
+                   linear-gradient(90deg,rgba(47,128,255,0.025) 1px,transparent 1px);
+  background-size:48px 48px;
+  mask-image:radial-gradient(ellipse 80% 60% at 50% 0%,black 30%,transparent 100%)}
+body::after{content:'';position:fixed;top:-200px;left:50%;transform:translateX(-50%);
+  width:700px;height:500px;z-index:0;pointer-events:none;
+  background:radial-gradient(ellipse,rgba(47,128,255,0.07) 0%,transparent 70%)}
+
+/* ─── LOGIN ─────────────────────────────────────────────────────── */
+#loginPage{
+  position:relative;z-index:1;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  min-height:100vh;padding:24px}
+
+.login-card{
+  width:100%;max-width:380px;
+  background:var(--card);border:1px solid var(--border);
+  border-radius:var(--radius-lg);padding:36px 32px 32px;
+  backdrop-filter:blur(12px);
+  box-shadow:0 20px 60px rgba(0,0,0,0.4),0 0 0 1px rgba(255,255,255,0.03)}
+
+.login-logo{display:flex;align-items:center;gap:10px;margin-bottom:28px}
+.login-logo-mark{
+  width:36px;height:36px;border-radius:10px;
+  background:linear-gradient(135deg,#2f80ff,#00d4ff);
+  display:flex;align-items:center;justify-content:center;
+  box-shadow:0 4px 16px rgba(47,128,255,0.4)}
+.login-logo-mark svg{width:20px;height:20px}
+.login-logo-name{font-size:15px;font-weight:700;letter-spacing:-0.2px}
+.login-logo-sub{font-size:11px;color:var(--text-dim);letter-spacing:2px;text-transform:uppercase;margin-top:1px}
+
+.login-title{font-size:22px;font-weight:800;margin-bottom:6px;
+  background:linear-gradient(150deg,#fff 0%,rgba(160,200,255,0.9) 60%,rgba(0,212,255,0.7) 100%);
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+.login-sub{font-size:12px;color:var(--text-dim);margin-bottom:28px}
+
+.field{margin-bottom:16px}
+.field label{display:block;font-size:11px;font-weight:600;color:var(--text-sub);
+  letter-spacing:1px;text-transform:uppercase;margin-bottom:7px}
+.field input{
+  width:100%;background:rgba(255,255,255,0.04);
+  border:1px solid var(--border);border-radius:var(--radius-sm);
+  padding:11px 14px;font-size:14px;color:var(--text);outline:none;
+  transition:border-color .18s,box-shadow .18s;font-family:inherit}
+.field input::placeholder{color:var(--text-dim)}
+.field input:focus{border-color:var(--border-hi);box-shadow:0 0 0 3px rgba(47,128,255,0.12)}
+
+.login-err{
+  display:none;font-size:12px;color:#ff6b6b;
+  background:rgba(255,68,68,0.08);border:1px solid rgba(255,68,68,0.18);
+  border-radius:8px;padding:9px 12px;margin-bottom:14px}
+.login-err.show{display:block}
+
+.btn-login{
+  width:100%;padding:13px;border-radius:var(--radius-md);
+  background:linear-gradient(135deg,#2f80ff,#1a6aff);
+  color:#fff;font-size:15px;font-weight:700;border:none;cursor:pointer;
+  box-shadow:0 4px 20px rgba(47,128,255,0.3),inset 0 1px 0 rgba(255,255,255,0.15);
+  transition:all .2s ease;letter-spacing:.3px;margin-top:4px;font-family:inherit}
+.btn-login:hover{box-shadow:0 6px 28px rgba(47,128,255,0.45),inset 0 1px 0 rgba(255,255,255,0.15);transform:translateY(-1px)}
+.btn-login:active{transform:scale(0.97)}
+.btn-login:disabled{opacity:.5;cursor:default;transform:none}
+
+/* ─── DASHBOARD ─────────────────────────────────────────────────── */
+#dashPage{display:none;position:relative;z-index:1;min-height:100vh}
+
+.top-bar{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:28px 28px 0;max-width:1440px;margin:0 auto}
+.logo{display:flex;align-items:center;gap:10px}
+.logo-mark{
+  width:32px;height:32px;border-radius:9px;
+  background:linear-gradient(135deg,#2f80ff,#00d4ff);
+  display:flex;align-items:center;justify-content:center;
+  box-shadow:0 2px 12px rgba(47,128,255,0.35)}
+.logo-mark svg{width:18px;height:18px}
+.logo-name{font-size:15px;font-weight:700;letter-spacing:-0.2px}
+.logo-sub{font-size:10px;color:var(--text-dim);letter-spacing:1.5px;text-transform:uppercase;margin-top:1px}
+
+.status-pill{
+  display:flex;align-items:center;gap:6px;
+  background:rgba(0,230,118,0.08);border:1px solid rgba(0,230,118,0.18);
+  border-radius:100px;padding:5px 12px 5px 8px;
+  font-size:11px;font-weight:600;color:var(--green);letter-spacing:.3px}
+.dot{width:6px;height:6px;border-radius:50%;background:var(--green);
+  box-shadow:0 0 8px var(--green);animation:dotPulse 2.4s ease-in-out infinite}
+@keyframes dotPulse{0%,100%{opacity:1}50%{opacity:.3}}
+
+.top-actions{display:flex;align-items:center;gap:10px}
+.btn-logout{
+  background:rgba(255,68,68,0.08);border:1px solid rgba(255,68,68,0.18);
+  border-radius:8px;padding:6px 12px;font-size:11px;font-weight:600;
+  color:var(--red);cursor:pointer;letter-spacing:.3px;transition:all .15s;font-family:inherit}
+.btn-logout:hover{background:rgba(255,68,68,0.15)}
+
+.container{max-width:1440px;margin:0 auto;padding:22px 28px 40px}
+
+/* stat cards */
+.stats-row{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:22px}
+.stat-card{
+  background:var(--card);border:1px solid var(--border);
+  border-radius:var(--radius-md);padding:20px 22px;
+  transition:border-color .2s,background .2s}
+.stat-card:hover{border-color:var(--border-hi);background:var(--card-hi)}
+.sc-label{font-size:11px;color:var(--text-dim);letter-spacing:1px;text-transform:uppercase;margin-bottom:10px}
+.sc-value{font-size:34px;font-weight:800;line-height:1;
+  background:linear-gradient(135deg,var(--text) 0%,rgba(160,200,255,0.8) 100%);
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+.sc-unit{font-size:11px;color:var(--text-dim);margin-top:6px}
+
+/* panels */
+.section{
+  background:var(--card);border:1px solid var(--border);
+  border-radius:var(--radius-lg);margin-bottom:18px;overflow:hidden}
+.section-header{
+  padding:16px 22px;border-bottom:1px solid var(--border);
+  display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px}
+.section-title{font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:var(--text-sub)}
+
+.controls{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+
+.month-input{
+  background:rgba(255,255,255,0.04);border:1px solid var(--border);
+  border-radius:8px;padding:7px 12px;font-size:12px;color:var(--text);
+  outline:none;height:34px;font-family:inherit;color-scheme:dark;
+  transition:border-color .15s,box-shadow .15s}
+.month-input:focus{border-color:var(--border-hi);box-shadow:0 0 0 3px rgba(47,128,255,0.12)}
+
+.btn{
+  border:none;border-radius:8px;padding:0 14px;height:34px;
+  font-size:12px;font-weight:600;cursor:pointer;letter-spacing:.3px;
+  display:inline-flex;align-items:center;gap:5px;
+  transition:all .15s;font-family:inherit}
+.btn-blue{background:rgba(47,128,255,0.12);border:1px solid rgba(47,128,255,0.22);color:var(--blue)}
+.btn-blue:hover{background:rgba(47,128,255,0.22);border-color:rgba(47,128,255,0.45)}
+.btn-green{background:rgba(0,230,118,0.08);border:1px solid rgba(0,230,118,0.18);color:var(--green)}
+.btn-green:hover{background:rgba(0,230,118,0.16);border-color:rgba(0,230,118,0.36)}
+.btn-dim{background:rgba(255,255,255,0.03);border:1px solid var(--border);color:var(--text-dim)}
+.btn-dim:hover{background:rgba(255,255,255,0.07);color:var(--text-sub)}
+
+.combo-wrap{position:relative;display:inline-block}
+.combo-input{
+  background:rgba(255,255,255,0.04);border:1px solid var(--border);
+  border-radius:8px;padding:7px 12px;font-size:12px;color:var(--text);
+  outline:none;height:34px;font-family:inherit;width:96px;
+  transition:border-color .15s,box-shadow .15s}
+.combo-input:focus{border-color:var(--border-hi);box-shadow:0 0 0 3px rgba(47,128,255,0.12)}
+.combo-input::placeholder{color:var(--text-dim)}
+.combo-drop{
+  position:absolute;top:calc(100% + 4px);left:0;min-width:100%;max-width:220px;
+  background:#091628;border:1px solid var(--border-hi);border-radius:8px;
+  max-height:200px;overflow-y:auto;z-index:200;display:none;
+  box-shadow:0 8px 32px rgba(0,0,0,0.5);padding:4px 0}
+.combo-drop.open{display:block}
+.combo-item{padding:7px 12px;font-size:12px;color:var(--text-sub);cursor:pointer;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:background .1s,color .1s}
+.combo-item:hover{background:rgba(47,128,255,0.12);color:var(--blue)}
+.combo-empty{padding:8px 12px;font-size:11px;color:var(--text-dim)}
+
+.th-sort{cursor:pointer;user-select:none}
+.th-sort:hover{color:var(--text-sub)}
+.sort-icon{margin-left:3px;opacity:.35;font-style:normal;font-size:9px}
+.sort-icon.active{opacity:1;color:var(--blue)}
+
+/* table */
+.table-wrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{
+  text-align:left;padding:10px 16px;
+  font-size:10px;font-weight:700;color:var(--text-dim);
+  border-bottom:1px solid var(--border);white-space:nowrap;
+  text-transform:uppercase;letter-spacing:.8px}
+td{padding:11px 16px;border-bottom:1px solid rgba(255,255,255,0.04);
+  vertical-align:middle;color:var(--text-sub)}
+tr:last-child td{border-bottom:none}
+tr:hover td{background:rgba(255,255,255,0.02);color:var(--text)}
+
+.num{color:var(--text-dim);font-size:11px;font-variant-numeric:tabular-nums}
+.plate-tag{
+  font-size:11px;font-weight:700;letter-spacing:1.5px;
+  background:rgba(47,128,255,0.1);border:1px solid rgba(47,128,255,0.2);
+  border-radius:5px;padding:2px 7px;color:var(--blue);white-space:nowrap}
+.nil{color:var(--text-dim);font-size:11px}
+
+.badge{display:inline-block;padding:3px 9px;border-radius:100px;font-size:10px;font-weight:700;
+  letter-spacing:.5px;text-transform:uppercase;white-space:nowrap}
+.badge-pending{background:rgba(245,158,11,0.1);border:1px solid rgba(245,158,11,0.22);color:var(--amber)}
+.badge-resolved{background:rgba(0,230,118,0.08);border:1px solid rgba(0,230,118,0.2);color:var(--green)}
+
+.empty-state td{text-align:center;padding:48px;color:var(--text-dim);font-size:12px}
+
+.pager{
+  display:flex;align-items:center;justify-content:flex-end;
+  padding:12px 18px;border-top:1px solid var(--border);
+  gap:6px;font-size:11px;color:var(--text-dim);flex-wrap:wrap}
+.pager-info{flex:1}
+.page-btn{
+  background:rgba(255,255,255,0.04);border:1px solid var(--border);
+  border-radius:6px;padding:4px 10px;cursor:pointer;
+  font-size:11px;color:var(--text-sub);transition:all .12s;font-family:inherit}
+.page-btn:hover{background:rgba(47,128,255,0.1);border-color:rgba(47,128,255,0.25);color:var(--blue)}
+.page-btn.active{background:rgba(47,128,255,0.16);border-color:rgba(47,128,255,0.4);color:var(--blue);font-weight:700}
+
+@media(max-width:640px){
+  .stats-row{grid-template-columns:repeat(2,1fr)}
+  .container{padding:14px 14px 40px}
+  .top-bar{padding:20px 14px 0}
+}
+</style>
+</head>
+<body>
+
+<!-- ─── LOGIN ─────────────────────────────────────────────────────────────── -->
+<div id="loginPage">
+  <div class="login-card">
+    <div class="login-logo">
+      <div class="login-logo-mark">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+          <path fill="#fff" d="M14.475 11.975Q15.5 10.95 15.5 9.5t-1.025-2.475T12 6T9.525 7.025T8.5 9.5t1.025 2.475T12 13t2.475-1.025M12 22q-3.65-.925-5.825-4T4 11.1V5l8-3l8 3v6.1q0 3.825-2.175 6.9T12 22m0-2.1q1.475-.475 2.613-1.487t1.987-2.288q-1.075-.55-2.238-.837T12 15t-2.363.288t-2.237.837q.85 1.275 1.988 2.288T12 19.9"/>
+        </svg>
+      </div>
+      <div>
+        <div class="login-logo-name">WhaleTech</div>
+        <div class="login-logo-sub">Admin Portal</div>
+      </div>
+    </div>
+    <div class="login-title">物业管理后台</div>
+    <div class="login-sub">请使用管理员账号登录</div>
+    <div id="loginErr" class="login-err"></div>
+    <div class="field">
+      <label>账号</label>
+      <input id="loginUser" type="text" placeholder="admin" autocomplete="username" value="admin">
+    </div>
+    <div class="field">
+      <label>密码</label>
+      <input id="loginPass" type="password" placeholder="••••••••" autocomplete="current-password">
+    </div>
+    <button class="btn-login" id="loginBtn" onclick="doLogin()">登 录</button>
+  </div>
+</div>
+
+<!-- ─── DASHBOARD ──────────────────────────────────────────────────────────── -->
+<div id="dashPage">
+  <div class="top-bar">
+    <div class="logo">
+      <div class="logo-mark">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+          <path fill="#fff" d="M14.475 11.975Q15.5 10.95 15.5 9.5t-1.025-2.475T12 6T9.525 7.025T8.5 9.5t1.025 2.475T12 13t2.475-1.025M12 22q-3.65-.925-5.825-4T4 11.1V5l8-3l8 3v6.1q0 3.825-2.175 6.9T12 22m0-2.1q1.475-.475 2.613-1.487t1.987-2.288q-1.075-.55-2.238-.837T12 15t-2.363.288t-2.237.837q.85 1.275 1.988 2.288T12 19.9"/>
+        </svg>
+      </div>
+      <div>
+        <div class="logo-name">物业管理后台</div>
+        <div class="logo-sub" id="lastRefresh">实时数据看板</div>
+      </div>
+    </div>
+    <div class="top-actions">
+      <div class="status-pill"><div class="dot"></div>在线</div>
+      <button class="btn-logout" onclick="doLogout()">退出登录</button>
+    </div>
+  </div>
+
+  <div class="container">
+    <!-- 统计卡片 -->
+    <div class="stats-row">
+      <div class="stat-card">
+        <div class="sc-label">今日来访</div>
+        <div class="sc-value" id="sToday">—</div>
+        <div class="sc-unit">次</div>
+      </div>
+      <div class="stat-card">
+        <div class="sc-label">本月来访</div>
+        <div class="sc-value" id="sMonth">—</div>
+        <div class="sc-unit">次</div>
+      </div>
+      <div class="stat-card">
+        <div class="sc-label">待处理案件</div>
+        <div class="sc-value" id="sPending">—</div>
+        <div class="sc-unit">条</div>
+      </div>
+      <div class="stat-card">
+        <div class="sc-label">累计访客</div>
+        <div class="sc-value" id="sUsers">—</div>
+        <div class="sc-unit">人</div>
+      </div>
+    </div>
+
+    <!-- 来访记录 -->
+    <div class="section">
+      <div class="section-header">
+        <div class="section-title">来访记录</div>
+        <div class="controls">
+          <input class="month-input" type="month" id="filterMonth">
+          <div class="combo-wrap">
+            <input class="combo-input" id="fPlate" placeholder="车牌…" autocomplete="off"
+                   oninput="onComboInput('plate')" onfocus="onComboFocus('plate')" onblur="onComboBlur('plate')">
+            <div class="combo-drop" id="cd-plate"></div>
+          </div>
+          <div class="combo-wrap">
+            <input class="combo-input" id="fPhone" placeholder="手机…" autocomplete="off"
+                   oninput="onComboInput('phone')" onfocus="onComboFocus('phone')" onblur="onComboBlur('phone')">
+            <div class="combo-drop" id="cd-phone"></div>
+          </div>
+          <div class="combo-wrap">
+            <input class="combo-input" id="fCompany" placeholder="单位…" autocomplete="off"
+                   oninput="onComboInput('company')" onfocus="onComboFocus('company')" onblur="onComboBlur('company')">
+            <div class="combo-drop" id="cd-company"></div>
+          </div>
+          <button class="btn btn-blue" onclick="filterVisits()">筛选</button>
+          <button class="btn btn-dim" onclick="clearFilters()">清除</button>
+          <button class="btn btn-green" onclick="exportCSV('visits')">↓ 导出 CSV</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th class="th-sort" onclick="sortBy('timestamp')">来访时间 <i class="sort-icon active" id="si-timestamp">↓</i></th>
+              <th>姓名</th>
+              <th class="th-sort" onclick="sortBy('plate')">车牌 <i class="sort-icon" id="si-plate"></i></th>
+              <th class="th-sort" onclick="sortBy('phone')">手机 <i class="sort-icon" id="si-phone"></i></th>
+              <th class="th-sort" onclick="sortBy('company')">单位 <i class="sort-icon" id="si-company"></i></th>
+              <th>事由</th>
+            </tr>
+          </thead>
+          <tbody id="visitsTbody">
+            <tr class="empty-state"><td colspan="7">加载中…</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="pager" id="visitsPager"></div>
+    </div>
+
+    <!-- 待处理案件 -->
+    <div class="section">
+      <div class="section-header">
+        <div class="section-title">人工待处理案件</div>
+        <div class="controls">
+          <button class="btn btn-green" onclick="exportCSV('pending')">↓ 导出 CSV</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>#</th><th>创建时间</th><th>姓名</th><th>车牌</th>
+              <th>手机</th><th>单位</th><th>事由</th><th>触发原因</th><th>状态</th>
+            </tr>
+          </thead>
+          <tbody id="pendingTbody">
+            <tr class="empty-state"><td colspan="9">加载中…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ─── Auth ────────────────────────────────────────────────────────────────────
+const CRED_KEY  = '_adminCred';
+const PAGE_SIZE = 50;
+let _cred = localStorage.getItem(CRED_KEY) || '';
+let _allVisits   = [];
+let _currentPage = 1;
+let _sortCol = 'timestamp';
+let _sortDir = 'desc';
+var _dropData = { plate: [], phone: [], company: [] };
+
+function authHeader() {
+  return { 'Authorization': 'Basic ' + _cred };
+}
+
+async function apiFetch(path) {
+  const r = await fetch(path, { headers: authHeader() });
+  if (r.status === 401) { clearAuth(); throw new Error('401'); }
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  return r.json();
+}
+
+async function apiFetchBlob(path) {
+  const r = await fetch(path, { headers: authHeader() });
+  if (r.status === 401) { clearAuth(); return null; }
+  if (!r.ok) return null;
+  return r.blob();
+}
+
+function clearAuth() {
+  _cred = '';
+  localStorage.removeItem(CRED_KEY);
+  showLogin();
+}
+
+function showLogin() {
+  document.getElementById('loginPage').style.display = 'flex';
+  document.getElementById('dashPage').style.display  = 'none';
+}
+
+function showDash() {
+  document.getElementById('loginPage').style.display = 'none';
+  document.getElementById('dashPage').style.display  = 'block';
+}
+
+// ─── Login ───────────────────────────────────────────────────────────────────
+document.getElementById('loginPass').addEventListener('keydown', function(e) {
+  if (e.key === 'Enter') doLogin();
+});
+
+async function doLogin() {
+  var user = document.getElementById('loginUser').value.trim();
+  var pass = document.getElementById('loginPass').value;
+  var btn  = document.getElementById('loginBtn');
+  var err  = document.getElementById('loginErr');
+  err.classList.remove('show');
+  if (!pass) { err.textContent = '请输入密码'; err.classList.add('show'); return; }
+  btn.disabled = true;
+  btn.textContent = '验证中…';
+  var cred = btoa(unescape(encodeURIComponent(user + ':' + pass)));
+  try {
+    var r = await fetch('/admin/data/stats', { headers: { 'Authorization': 'Basic ' + cred } });
+    if (r.status === 401) {
+      err.textContent = '账号或密码错误';
+      err.classList.add('show');
+      return;
+    }
+    if (!r.ok) {
+      err.textContent = '服务器异常，请稍后重试';
+      err.classList.add('show');
+      return;
+    }
+    _cred = cred;
+    localStorage.setItem(CRED_KEY, cred);
+    showDash();
+    initDash();
+  } catch(e) {
+    err.textContent = '无法连接服务器';
+    err.classList.add('show');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '登 录';
+  }
+}
+
+function doLogout() {
+  clearAuth();
+}
+
+// ─── Dashboard init ───────────────────────────────────────────────────────────
+// Set default filter month to current month
+(function() {
+  var d = new Date();
+  document.getElementById('filterMonth').value =
+    d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+})();
+
+function initDash() {
+  var month = document.getElementById('filterMonth').value;
+  loadStats();
+  loadVisits(month);
+  loadPending();
+}
+
+// ─── Combobox ────────────────────────────────────────────────────────────────
+var _comboMap = { plate: 'fPlate', phone: 'fPhone', company: 'fCompany' };
+
+function buildDropData() {
+  var seen = { plate: new Set(), phone: new Set(), company: new Set() };
+  _allVisits.forEach(function(r) {
+    if (r.plate)   seen.plate.add(r.plate.toUpperCase());
+    if (r.phone)   seen.phone.add(r.phone);
+    if (r.company) seen.company.add(r.company);
+  });
+  _dropData.plate   = Array.from(seen.plate).sort();
+  _dropData.phone   = Array.from(seen.phone).sort();
+  _dropData.company = Array.from(seen.company).sort();
+}
+
+function renderDrop(field, items) {
+  var el = document.getElementById('cd-' + field);
+  el.innerHTML = items.length
+    ? items.slice(0, 10).map(function(v) {
+        return '<div class="combo-item" onmousedown="selectComboItem(\'' + field + '\',this)">' +
+               esc(v) + '</div>';
+      }).join('')
+    : '<div class="combo-empty">无匹配</div>';
+  el.classList.add('open');
+}
+
+function onComboInput(field) {
+  var val = (document.getElementById(_comboMap[field]).value || '').toLowerCase();
+  var items = _dropData[field].filter(function(v) { return v.toLowerCase().indexOf(val) >= 0; });
+  renderDrop(field, items);
+  _currentPage = 1;
+  renderVisits();
+}
+
+function onComboFocus(field) {
+  var val = (document.getElementById(_comboMap[field]).value || '').toLowerCase();
+  var items = val
+    ? _dropData[field].filter(function(v) { return v.toLowerCase().indexOf(val) >= 0; })
+    : _dropData[field];
+  renderDrop(field, items);
+}
+
+function onComboBlur(field) {
+  setTimeout(function() {
+    var el = document.getElementById('cd-' + field);
+    if (el) el.classList.remove('open');
+  }, 180);
+}
+
+function selectComboItem(field, el) {
+  document.getElementById(_comboMap[field]).value = el.textContent;
+  document.getElementById('cd-' + field).classList.remove('open');
+  _currentPage = 1;
+  renderVisits();
+}
+
+// ─── Sort / Filter helpers ──────────────────────────────────────────────────
+function getFilteredSorted() {
+  var plateF   = (document.getElementById('fPlate').value   || '').trim().toLowerCase();
+  var phoneF   = (document.getElementById('fPhone').value   || '').trim().toLowerCase();
+  var companyF = (document.getElementById('fCompany').value || '').trim().toLowerCase();
+  var data = _allVisits;
+  if (plateF)   data = data.filter(function(r){ return (r.plate   || '').toLowerCase().indexOf(plateF)   >= 0; });
+  if (phoneF)   data = data.filter(function(r){ return (r.phone   || '').toLowerCase().indexOf(phoneF)   >= 0; });
+  if (companyF) data = data.filter(function(r){ return (r.company || '').toLowerCase().indexOf(companyF) >= 0; });
+  return data.slice().sort(function(a, b) {
+    var va = a[_sortCol] || ''; var vb = b[_sortCol] || '';
+    var cmp = va < vb ? -1 : va > vb ? 1 : 0;
+    return _sortDir === 'asc' ? cmp : -cmp;
+  });
+}
+
+function sortBy(col) {
+  if (_sortCol === col) {
+    _sortDir = _sortDir === 'asc' ? 'desc' : 'asc';
+  } else {
+    _sortCol = col;
+    _sortDir = col === 'timestamp' ? 'desc' : 'asc';
+  }
+  _currentPage = 1;
+  renderVisits();
+}
+
+function clearFilters() {
+  document.getElementById('fPlate').value   = '';
+  document.getElementById('fPhone').value   = '';
+  document.getElementById('fCompany').value = '';
+  ['plate','phone','company'].forEach(function(f) {
+    var el = document.getElementById('cd-' + f);
+    if (el) el.classList.remove('open');
+  });
+  _currentPage = 1;
+  renderVisits();
+}
+
+function updateSortIcons() {
+  ['timestamp','plate','phone','company'].forEach(function(col) {
+    var el = document.getElementById('si-' + col);
+    if (!el) return;
+    if (col === _sortCol) {
+      el.textContent = _sortDir === 'asc' ? '↑' : '↓';
+      el.classList.add('active');
+    } else {
+      el.textContent = '△';
+      el.classList.remove('active');
+    }
+  });
+}
+
+// ─── Stats ───────────────────────────────────────────────────────────────────
+async function loadStats() {
+  try {
+    var d = await apiFetch('/admin/data/stats');
+    document.getElementById('sToday').textContent   = d.today;
+    document.getElementById('sMonth').textContent   = d.month;
+    document.getElementById('sPending').textContent = d.pending;
+    document.getElementById('sUsers').textContent   = d.users;
+    document.getElementById('lastRefresh').textContent =
+      '刷新于 ' + new Date().toLocaleTimeString('zh-CN', {hour:'2-digit', minute:'2-digit'});
+  } catch(e) { if (e.message !== '401') console.error('stats', e); }
+}
+
+// ─── Visits ──────────────────────────────────────────────────────────────────
+async function loadVisits(month) {
+  document.getElementById('visitsTbody').innerHTML =
+    '<tr class="empty-state"><td colspan="7">加载中…</td></tr>';
+  var url = '/admin/data/visits' + (month ? '?month=' + encodeURIComponent(month) : '');
+  try {
+    var d = await apiFetch(url);
+    _allVisits   = d.rows;
+    buildDropData();
+    _currentPage = 1;
+    renderVisits();
+  } catch(e) {
+    if (e.message !== '401')
+      document.getElementById('visitsTbody').innerHTML =
+        '<tr class="empty-state"><td colspan="7">加载失败，请刷新重试</td></tr>';
+  }
+}
+
+function filterVisits() {
+  var month = document.getElementById('filterMonth').value;
+  loadVisits(month);
+}
+
+function renderVisits() {
+  var tbody = document.getElementById('visitsTbody');
+  var display = getFilteredSorted();
+  updateSortIcons();
+  if (!display.length) {
+    var msg = _allVisits.length ? '无匹配记录，请调整筛选条件' : '该月暂无来访记录';
+    tbody.innerHTML = '<tr class="empty-state"><td colspan="7">' + msg + '</td></tr>';
+    document.getElementById('visitsPager').innerHTML = '';
+    return;
+  }
+  var total = display.length;
+  var pages = Math.ceil(total / PAGE_SIZE);
+  if (_currentPage > pages) _currentPage = pages;
+  var start = (_currentPage - 1) * PAGE_SIZE;
+  var slice = display.slice(start, start + PAGE_SIZE);
+  tbody.innerHTML = slice.map(function(r, i) {
+    return '<tr>' +
+      '<td><span class="num">' + (start + i + 1) + '</span></td>' +
+      '<td>' + esc(r.timestamp) + '</td>' +
+      '<td>' + esc(r.name) + '</td>' +
+      '<td>' + plateFmt(r.plate) + '</td>' +
+      '<td>' + esc(r.phone) + '</td>' +
+      '<td>' + esc(r.company) + '</td>' +
+      '<td>' + esc(r.reason) + '</td>' +
+      '</tr>';
+  }).join('');
+  renderPager(total);
+}
+
+function renderPager(total) {
+  var pages = Math.ceil(total / PAGE_SIZE);
+  var el = document.getElementById('visitsPager');
+  var suffix = total < _allVisits.length ? '（过滤后，共 ' + _allVisits.length + ' 条）' : ' 条记录';
+  if (pages <= 1) {
+    el.innerHTML = '<span class="pager-info">共 ' + total + suffix + '</span>';
+    return;
+  }
+  var s = Math.max(1, _currentPage - 2);
+  var e = Math.min(pages, _currentPage + 2);
+  var html = '<span class="pager-info">共 ' + total + suffix + '</span>';
+  if (s > 1) html += '<button class="page-btn" onclick="goPage(1)">1</button>';
+  if (s > 2) html += '<span style="padding:0 2px;color:var(--text-dim)">…</span>';
+  for (var p = s; p <= e; p++) {
+    html += '<button class="page-btn' + (p === _currentPage ? ' active' : '') +
+            '" onclick="goPage(' + p + ')">' + p + '</button>';
+  }
+  if (e < pages - 1) html += '<span style="padding:0 2px;color:var(--text-dim)">…</span>';
+  if (e < pages) html += '<button class="page-btn" onclick="goPage(' + pages + ')">' + pages + '</button>';
+  el.innerHTML = html;
+}
+
+function goPage(p) {
+  _currentPage = p;
+  renderVisits();
+}
+
+// ─── Pending ─────────────────────────────────────────────────────────────────
+async function loadPending() {
+  try {
+    var d = await apiFetch('/admin/data/pending');
+    var tbody = document.getElementById('pendingTbody');
+    if (!d.rows.length) {
+      tbody.innerHTML = '<tr class="empty-state"><td colspan="9">暂无待处理案件</td></tr>';
+      return;
+    }
+    tbody.innerHTML = d.rows.map(function(r, i) {
+      return '<tr>' +
+        '<td><span class="num">' + (i + 1) + '</span></td>' +
+        '<td>' + esc(r.created_at) + '</td>' +
+        '<td>' + esc(r.name) + '</td>' +
+        '<td>' + plateFmt(r.plate) + '</td>' +
+        '<td>' + esc(r.phone) + '</td>' +
+        '<td>' + esc(r.company) + '</td>' +
+        '<td>' + esc(r.reason) + '</td>' +
+        '<td style="font-size:11px;color:var(--text-dim)">' + esc(r.trigger_reason) + '</td>' +
+        '<td><span class="badge badge-' + esc(r.status) + '">' +
+          (r.status === 'pending' ? '待处理' : '已处理') +
+        '</span></td>' +
+        '</tr>';
+    }).join('');
+  } catch(e) {
+    if (e.message !== '401')
+      document.getElementById('pendingTbody').innerHTML =
+        '<tr class="empty-state"><td colspan="9">加载失败，请刷新重试</td></tr>';
+  }
+}
+
+// ─── Export ──────────────────────────────────────────────────────────────────
+async function exportCSV(type) {
+  var month = document.getElementById('filterMonth').value;
+  var suffix = (type === 'visits' && month) ? '?month=' + encodeURIComponent(month) : '';
+  var path = '/admin/export/' + type + '.csv' + suffix;
+  var filename = (type === 'visits' ? 'visits_' + (month || 'all') : 'pending_cases') + '.csv';
+  var blob = await apiFetchBlob(path);
+  if (!blob) return;
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+// ─── Utils ───────────────────────────────────────────────────────────────────
+function esc(v) {
+  if (v == null || v === '') return '<span class="nil">—</span>';
+  return String(v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function plateFmt(v) {
+  if (!v) return '<span class="nil">—</span>';
+  return '<span class="plate-tag">' + esc(v) + '</span>';
+}
+
+// ─── Boot ────────────────────────────────────────────────────────────────────
+(async function boot() {
+  if (_cred) {
+    try {
+      var r = await fetch('/admin/data/stats', { headers: authHeader() });
+      if (r.ok) { showDash(); initDash(); return; }
+    } catch(e) {}
+  }
+  showLogin();
+})();
+</script>
+</body>
+</html>

@@ -12,14 +12,24 @@ import json
 import re
 from datetime import datetime
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse
+import secrets
+import csv
+import io
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, Depends, HTTPException, status
+from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from openai import AsyncOpenAI
 
 from database import DB_FILE, init_db
 from voice_pipeline import VoicePipeline
+
+# ── Admin 后台配置 ────────────────────────────────────────────────────────────
+# ADMIN_PASSWORD: 写入 .env，默认 admin123（上线前务必更改）
+# ADMIN_URL:      服务对外的根地址，用于在微信侧发送后台链接
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin123")
+ADMIN_URL      = os.getenv("ADMIN_URL", "")
 from validator import validate_visitor_data
 from wechat_bot import (
     send_visitor_notification,
@@ -209,10 +219,11 @@ _KEEPALIVE_PHRASES = {
 
 async def handle_wechat_message(base_url, token, to_user_id, message, context_token, openai_client):
     """
-    处理保安通过微信发来的消息，支持三种意图：
+    处理保安通过微信发来的消息，支持四种意图：
     A. 补充登记访客信息（手动补录）
     B. 查询数据库（Text-to-SQL，支持多条语句）
     C. 其他一般对话
+    D. 查看可视化后台（发送 /admin 链接）
     携带最近 MAX_HISTORY_TURNS 轮上下文，让 AI 理解追问。
     """
     # 保活短语：仅刷新 context_token，不消耗 LLM token
@@ -253,7 +264,11 @@ async def handle_wechat_message(base_url, token, to_user_id, message, context_to
 重要：visits表的时间列名是 timestamp（不是 visit_time），查询时必须用 timestamp，例如 DATE(timestamp) = '2026-05-29'。
 
 【类型C：其他对话】
-直接用自然语言回答，不包含以上任何格式标记。"""
+直接用自然语言回答，不包含以上任何格式标记。
+
+【类型D：查看可视化后台】
+如果保安表达了查看可视化界面、数据大屏、月度报表或导出CSV的意愿（例如"有后台吗"、"能看个表格吗"、"主管要复盘"、"能导出吗"、"有可视化吗"），
+直接回复：物业管理后台地址为 {ADMIN_URL + '/admin' if ADMIN_URL else '/admin（与本系统访客页面域名相同）'}（账号 admin，密码由管理员设置）。该页面可按月筛选来访记录并一键导出CSV报表，无需其他格式标记。"""
 
     # 发送"正在输入"状态（不访问任何共享状态，无需持锁，fire-and-forget）
     asyncio.create_task(send_typing_indicator(base_url, token, to_user_id, context_token))
@@ -503,6 +518,165 @@ async def websocket_voice_endpoint(websocket: WebSocket, user_uuid: str):
     """
     pipeline = VoicePipeline(user_uuid)
     await pipeline.connect_and_handle(websocket)
+
+# ── Admin 后台：HTTP Basic Auth + 可视化看板 ────────────────────────────────
+_http_basic = HTTPBasic()
+
+
+def verify_admin(credentials: HTTPBasicCredentials = Depends(_http_basic)) -> str:
+    """验证管理员账号密码（timing-safe 比对，防止时序攻击）。"""
+    ok_user = secrets.compare_digest(credentials.username.encode("utf-8"), b"admin")
+    ok_pass = secrets.compare_digest(
+        credentials.password.encode("utf-8"),
+        ADMIN_PASSWORD.encode("utf-8")
+    )
+    if not (ok_user and ok_pass):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="认证失败",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+    return credentials.username
+
+
+@app.get("/admin", response_class=HTMLResponse)
+async def admin_dashboard(_: str = Depends(verify_admin)):
+    """返回受密码保护的管理后台页面。"""
+    with open("static/admin.html", "r", encoding="utf-8") as f:
+        return f.read()
+
+
+@app.get("/admin/data/stats")
+async def admin_stats(_: str = Depends(verify_admin)):
+    """返回首屏统计卡片数据。"""
+    async with aiosqlite.connect(DB_FILE) as conn:
+        today = datetime.now().strftime("%Y-%m-%d")
+        month = datetime.now().strftime("%Y-%m")
+        async with conn.execute(
+            "SELECT COUNT(*) FROM visits WHERE DATE(timestamp) = ?", (today,)
+        ) as cur:
+            today_count = (await cur.fetchone())[0]
+        async with conn.execute(
+            "SELECT COUNT(*) FROM visits WHERE strftime('%Y-%m', timestamp) = ?", (month,)
+        ) as cur:
+            month_count = (await cur.fetchone())[0]
+        async with conn.execute(
+            "SELECT COUNT(*) FROM pending_human_cases WHERE status = 'pending'"
+        ) as cur:
+            pending_count = (await cur.fetchone())[0]
+        async with conn.execute("SELECT COUNT(*) FROM users") as cur:
+            users_count = (await cur.fetchone())[0]
+    return {
+        "today":   today_count,
+        "month":   month_count,
+        "pending": pending_count,
+        "users":   users_count,
+    }
+
+
+@app.get("/admin/data/visits")
+async def admin_visits(month: str = None, _: str = Depends(verify_admin)):
+    """返回来访记录列表，可按月份筛选（格式 YYYY-MM），无参数时返回最近 500 条。"""
+    async with aiosqlite.connect(DB_FILE) as conn:
+        conn.row_factory = aiosqlite.Row
+        if month:
+            sql = """
+                SELECT v.timestamp, u.name, u.default_plate AS plate,
+                       u.phone, u.default_company AS company, v.visit_reason AS reason
+                FROM visits v LEFT JOIN users u ON v.user_uuid = u.uuid
+                WHERE strftime('%Y-%m', v.timestamp) = ?
+                ORDER BY v.timestamp DESC
+            """
+            params = (month,)
+        else:
+            sql = """
+                SELECT v.timestamp, u.name, u.default_plate AS plate,
+                       u.phone, u.default_company AS company, v.visit_reason AS reason
+                FROM visits v LEFT JOIN users u ON v.user_uuid = u.uuid
+                ORDER BY v.timestamp DESC LIMIT 500
+            """
+            params = ()
+        async with conn.execute(sql, params) as cur:
+            rows = await cur.fetchall()
+    return {"rows": [dict(r) for r in rows]}
+
+
+@app.get("/admin/data/pending")
+async def admin_pending(_: str = Depends(verify_admin)):
+    """返回所有人工待处理案件。"""
+    async with aiosqlite.connect(DB_FILE) as conn:
+        conn.row_factory = aiosqlite.Row
+        async with conn.execute("""
+            SELECT created_at, partial_name AS name, partial_plate AS plate,
+                   partial_phone AS phone, partial_company AS company,
+                   partial_reason AS reason, trigger_reason, status
+            FROM pending_human_cases ORDER BY created_at DESC
+        """) as cur:
+            rows = await cur.fetchall()
+    return {"rows": [dict(r) for r in rows]}
+
+
+@app.get("/admin/export/visits.csv")
+async def export_visits_csv(month: str = None, _: str = Depends(verify_admin)):
+    """导出来访记录为 CSV（UTF-8 BOM，Excel 可直接打开）。"""
+    async with aiosqlite.connect(DB_FILE) as conn:
+        conn.row_factory = aiosqlite.Row
+        if month:
+            sql = """
+                SELECT v.timestamp, u.name, u.default_plate, u.phone,
+                       u.default_company, v.visit_reason
+                FROM visits v LEFT JOIN users u ON v.user_uuid = u.uuid
+                WHERE strftime('%Y-%m', v.timestamp) = ?
+                ORDER BY v.timestamp
+            """
+            params = (month,)
+        else:
+            sql = """
+                SELECT v.timestamp, u.name, u.default_plate, u.phone,
+                       u.default_company, v.visit_reason
+                FROM visits v LEFT JOIN users u ON v.user_uuid = u.uuid
+                ORDER BY v.timestamp
+            """
+            params = ()
+        async with conn.execute(sql, params) as cur:
+            rows = await cur.fetchall()
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["来访时间", "姓名", "车牌", "手机", "单位", "事由"])
+    for r in rows:
+        writer.writerow([v or "" for v in r])
+    filename = f"visits_{month or 'all'}.csv"
+    content = ("\ufeff" + buf.getvalue()).encode("utf-8")  # BOM，Excel 直接识别中文
+    return StreamingResponse(
+        iter([content]),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.get("/admin/export/pending.csv")
+async def export_pending_csv(_: str = Depends(verify_admin)):
+    """导出人工待处理案件为 CSV。"""
+    async with aiosqlite.connect(DB_FILE) as conn:
+        conn.row_factory = aiosqlite.Row
+        async with conn.execute("""
+            SELECT created_at, partial_name, partial_plate, partial_phone,
+                   partial_company, partial_reason, trigger_reason, status
+            FROM pending_human_cases ORDER BY created_at
+        """) as cur:
+            rows = await cur.fetchall()
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["创建时间", "姓名", "车牌", "手机", "单位", "事由", "触发原因", "状态"])
+    for r in rows:
+        writer.writerow([v or "" for v in r])
+    content = ("\ufeff" + buf.getvalue()).encode("utf-8")
+    return StreamingResponse(
+        iter([content]),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="pending_cases.csv"'},
+    )
+
 
 if __name__ == "__main__":
     # 使用 Uvicorn 启动 ASGI 服务器
