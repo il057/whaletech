@@ -2,19 +2,45 @@
 
 ## 架构
 
-```
-访客（浏览器扫码）
-    │  WebRTC 音频  WebSocket
-    ▼
-FastAPI 服务 (main.py)
-    ├── VoicePipeline ──► 火山引擎实时对话 API（ASR + LLM + TTS）
-    │       └── JSON 结构化数据 ──► SQLite (users / visits / pending_human_cases)
-    │
-    ├── iLink 长轮询客户端 ──► 微信 ClawBot
-    │       ├── 来访提醒推送 / 每日简报
-    │       └── 保安消息处理（Text-to-SQL / 自然语言补录）
-    │
-    └── Admin Dashboard /admin ──► 可视化后台 + CSV 导出
+```mermaid
+graph TD
+    subgraph Client ["终端交互层"]
+        C1["访客手机端 (H5)"]
+        C2["门卫端 (普通微信)"]
+        C3["物业管理员 (PC/移动端)"]
+    end
+
+    subgraph Backend ["核心服务层 (FastAPI)"]
+        B1["WebSocket 语音路由"]
+        B2["iLink 长轮询客户端"]
+        B3["Admin 可视化路由"]
+    end
+
+    subgraph AI_Engine ["AI 处理引擎"]
+        P1["VoicePipeline 对话编排器"]
+        A1["火山引擎实时对话 API"]
+        A2["DeepSeek / NLP & SQL"]
+    end
+
+    subgraph Storage ["数据持久层"]
+        DB[("SQLite 本地数据库")]
+    end
+
+    %% 访客链路
+    C1 -- "WebRTC 音频流 / WebSocket 信令" --> B1
+    B1 --> P1
+    P1 <--> A1
+    P1 -- "解析并强校验 JSON -> 入库" --> DB
+
+    %% 保安微信链路
+    B2 -- "主动推送：来访提醒/人工/日报" --> C2
+    C2 -- "回复：自然语言查询/补录" --> B2
+    B2 --> A2
+    A2 -- "生成受限 SQL / 结构化数据" --> DB
+
+    %% 物业后台链路
+    C3 -- "HTTP Basic Auth 验证" --> B3
+    B3 -- "执行统计查询 / 生成 CSV 导出" --> DB
 ```
 
 ## 部署步骤
